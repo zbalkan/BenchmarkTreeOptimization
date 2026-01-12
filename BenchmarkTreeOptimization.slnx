@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="BenchmarkTreeOptimization.Tests/BenchmarkTreeOptimization.Tests.csproj" />
+  <Project Path="BenchmarkTreeOptimization/BenchmarkTreeOptimization.csproj" />
+</Solution>
