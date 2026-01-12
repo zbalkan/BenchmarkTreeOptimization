@@ -1,4 +1,5 @@
 ﻿using BenchmarkDotNet.Attributes;
+using System.Runtime.CompilerServices;
 
 namespace BenchmarkTreeOptimization
 {
@@ -76,6 +77,7 @@ namespace BenchmarkTreeOptimization
 
         // SAME workload, different trees
         [Benchmark(Baseline = true)]
+        [MethodImpl(MethodImplOptions.NoInlining)]
         public void DefaultDomainTree()
         {
             for (int i = 0; i < N; i++)
@@ -83,6 +85,7 @@ namespace BenchmarkTreeOptimization
         }
 
         [Benchmark]
+        [MethodImpl(MethodImplOptions.NoInlining)]
         public void OptimizedDomainTree()
         {
             for (int i = 0; i < N; i++)
