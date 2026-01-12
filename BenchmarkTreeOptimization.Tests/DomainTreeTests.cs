@@ -21,6 +21,7 @@ public class DomainTreeTests
     [DataRow("google.com")]
     [DataRow("www.sub.domain.org")]
     [DataRow("*.wildcard.net")]
+    [DataRow("*.*.wildcard.net")]
     [DataRow("my-server_1.internal")]
     [DataRow("a.b.c.d.e.f.g")]
     public void Parity_ValidDomains_Match(string domain)
