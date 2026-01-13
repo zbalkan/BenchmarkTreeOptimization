@@ -694,22 +694,23 @@ namespace BenchmarkTreeOptimization.Backends.MMAP
                 if (!n.TryGetChild(key[i], out var child))
                 {
                     valueBytes = default;
-                    return false; // path does not exist
+                    return false; // path missing => key not present
                 }
 
                 n = child;
             }
 
-            if (n.ValueBytes is null)
+            // Key path exists, but value may not.
+            var vb = n.ValueBytes;
+            if (vb is null || vb.Length == 0)
             {
                 valueBytes = default;
-                return false; // node exists, but has no value
+                return false; // present-node-without-value is "not found" for TryGet semantics
             }
 
-            valueBytes = n.ValueBytes;
-            return true; // value exists
+            valueBytes = vb;
+            return true;
         }
-
 
         private static bool TrieTryRemove_NoLock(TrieNode root, byte[] key, out byte[]? removedBytes)
         {
