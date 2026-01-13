@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="BenchmarkTreeBackends.Tests/BenchmarkTreeBackends.Tests.csproj" />
+  <Project Path="BenchmarkTreeBackends/BenchmarkTreeBackends.csproj" />
+</Solution>
