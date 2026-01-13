@@ -33,7 +33,6 @@ using System.Buffers.Binary;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
-using System.IO.MemoryMappedFiles;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -41,59 +40,11 @@ using System.Threading;
 
 namespace BenchmarkTreeOptimization.Backends.MMAP
 {
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    public struct MmapHeader
-    {
-        public uint Magic;              // 'MMAP'
-        public ushort Version;          // 1
-        public ushort Endianness;       // 1 = little-endian
-
-        public long NodeRegionOffset;   // byte offset to first MmapNode (typically sizeof(MmapHeader))
-        public long NodeCount;          // number of nodes
-        public long ValueRegionOffset;  // byte offset to blob region (>= NodeRegionOffset + NodeCount*sizeof(MmapNode))
-    }
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    public struct MmapNode
-    {
-        public uint LabelId;        // for this trie, we use the byte itself as LabelId (0..255); root uses 0
-        public long FirstChildPos;  // file offset (bytes) to first child node in node array; 0 if none
-        public uint ChildCount;     // number of children
-
-        public long ValueOffset;    // relative to ValueRegionOffset; 0 = no value
-        public int ValueLength;     // payload length in bytes (excluding the 4-byte length prefix)
-    }
-
-    internal static class DomainTreeMmapFormat
-    {
-        public const uint Magic = 0x50414D4D;     // 'MMAP'
-        public const ushort Version = 1;
-        public const ushort LittleEndian = 1;
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static uint ToLabelId(byte b) => b;
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static byte FromLabelId(uint id) => (byte)id;
-    }
-
-    internal static class BinaryWriterExtensions
-    {
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static void WriteStruct<T>(this BinaryWriter bw, in T value) where T : struct
-        {
-            Span<byte> buf = stackalloc byte[Marshal.SizeOf<T>()];
-            T tmp = value;
-            MemoryMarshal.Write(buf, ref tmp);
-            bw.Write(buf);
-        }
-    }
-
     /// <summary>
     /// mmap-backed implementation of IBackend<TKey,TValue> with blue/green swaps.
     /// Reads come from an immutable, memory-mapped snapshot. All writes go to a staging trie until Swap() publishes.
     /// </summary>
-    public unsafe abstract class MmapBackend<TKey, TValue> : IBackend<TKey, TValue>, IDisposable
+    public abstract unsafe partial class MmapBackend<TKey, TValue> : IBackend<TKey, TValue>, IDisposable
         where TValue : class
     {
         protected readonly IValueCodec<TValue> _codec;
@@ -130,7 +81,7 @@ namespace BenchmarkTreeOptimization.Backends.MMAP
         {
             get
             {
-                ThrowIfDisposed();
+                ObjectDisposedException.ThrowIf(_disposed, this);
                 using var lease = AcquireActive();
                 ref readonly var root = ref lease.State.GetNodeAt(lease.State.RootPos);
                 return root.ChildCount == 0 && root.ValueOffset == 0;
@@ -159,14 +110,14 @@ namespace BenchmarkTreeOptimization.Backends.MMAP
 
         public bool ContainsKey(TKey key)
         {
-            ThrowIfDisposed();
+            ObjectDisposedException.ThrowIf(_disposed, this);
             using var lease = AcquireActive();
             return lease.State.TryFindNode(this, key, out _, requireValue: false);
         }
 
         public bool TryGet(TKey key, out TValue value)
         {
-            ThrowIfDisposed();
+            ObjectDisposedException.ThrowIf(_disposed, this);
             using var lease = AcquireActive();
 
             if (!lease.State.TryFindNode(this, key, out long nodePos, requireValue: true))
@@ -188,7 +139,7 @@ namespace BenchmarkTreeOptimization.Backends.MMAP
 
         public IEnumerator<TValue> GetEnumerator()
         {
-            ThrowIfDisposed();
+            ObjectDisposedException.ThrowIf(_disposed, this);
             var lease = AcquireActive(); // enumerator must hold the lease until disposed
             return new MmapEnumerator(this, lease, reverse: false);
         }
@@ -197,7 +148,7 @@ namespace BenchmarkTreeOptimization.Backends.MMAP
 
         public IEnumerable<TValue> GetReverseEnumerable()
         {
-            ThrowIfDisposed();
+            ObjectDisposedException.ThrowIf(_disposed, this);
             return new ReverseEnumerable(this);
         }
 
@@ -220,7 +171,7 @@ namespace BenchmarkTreeOptimization.Backends.MMAP
 
         public void Add(TKey key, TValue value)
         {
-            ThrowIfDisposed();
+            ObjectDisposedException.ThrowIf(_disposed, this);
             ArgumentNullException.ThrowIfNull(key);
             ArgumentNullException.ThrowIfNull(value);
 
@@ -237,7 +188,7 @@ namespace BenchmarkTreeOptimization.Backends.MMAP
 
         public bool TryAdd(TKey key, TValue? value)
         {
-            ThrowIfDisposed();
+            ObjectDisposedException.ThrowIf(_disposed, this);
             if (key is null) throw new ArgumentNullException(nameof(key));
             if (value is null) return false;
 
@@ -257,7 +208,7 @@ namespace BenchmarkTreeOptimization.Backends.MMAP
 
         public TValue GetOrAdd(TKey key, Func<TKey, TValue> valueFactory)
         {
-            ThrowIfDisposed();
+            ObjectDisposedException.ThrowIf(_disposed, this);
             if (key is null) throw new ArgumentNullException(nameof(key));
             ArgumentNullException.ThrowIfNull(valueFactory);
 
@@ -281,7 +232,7 @@ namespace BenchmarkTreeOptimization.Backends.MMAP
 
         public TValue AddOrUpdate(TKey key, Func<TKey, TValue> addValueFactory, Func<TKey, TValue, TValue> updateValueFactory)
         {
-            ThrowIfDisposed();
+            ObjectDisposedException.ThrowIf(_disposed, this);
             if (key is null) throw new ArgumentNullException(nameof(key));
             ArgumentNullException.ThrowIfNull(addValueFactory);
             ArgumentNullException.ThrowIfNull(updateValueFactory);
@@ -313,7 +264,7 @@ namespace BenchmarkTreeOptimization.Backends.MMAP
 
         public bool TryRemove(TKey key, out TValue? value)
         {
-            ThrowIfDisposed();
+            ObjectDisposedException.ThrowIf(_disposed, this);
             if (key is null) throw new ArgumentNullException(nameof(key));
 
             byte[]? bKey;
@@ -337,7 +288,7 @@ namespace BenchmarkTreeOptimization.Backends.MMAP
 
         public bool TryUpdate(TKey key, TValue newValue, TValue comparisonValue)
         {
-            ThrowIfDisposed();
+            ObjectDisposedException.ThrowIf(_disposed, this);
             if (key is null) throw new ArgumentNullException(nameof(key));
             ArgumentNullException.ThrowIfNull(newValue);
             ArgumentNullException.ThrowIfNull(comparisonValue);
@@ -367,7 +318,7 @@ namespace BenchmarkTreeOptimization.Backends.MMAP
 
         public void Clear()
         {
-            ThrowIfDisposed();
+            ObjectDisposedException.ThrowIf(_disposed, this);
             lock (_stagingLock)
             {
                 EnsureStagingLoadedFromActive_NoLock();
@@ -381,7 +332,7 @@ namespace BenchmarkTreeOptimization.Backends.MMAP
         /// </summary>
         public void Swap(bool parallelWrite = false)
         {
-            ThrowIfDisposed();
+            ObjectDisposedException.ThrowIf(_disposed, this);
 
             TrieNode snapshot;
             lock (_stagingLock)
@@ -737,25 +688,28 @@ namespace BenchmarkTreeOptimization.Backends.MMAP
         private static bool TrieTryGetValueBytes_NoLock(TrieNode root, byte[] key, out ReadOnlySpan<byte> valueBytes)
         {
             var n = root;
+
             for (int i = 0; i < key.Length; i++)
             {
                 if (!n.TryGetChild(key[i], out var child))
                 {
                     valueBytes = default;
-                    return false;
+                    return false; // path does not exist
                 }
+
                 n = child;
             }
 
             if (n.ValueBytes is null)
             {
                 valueBytes = default;
-                return true;
+                return false; // node exists, but has no value
             }
 
             valueBytes = n.ValueBytes;
-            return true;
+            return true; // value exists
         }
+
 
         private static bool TrieTryRemove_NoLock(TrieNode root, byte[] key, out byte[]? removedBytes)
         {
@@ -801,435 +755,36 @@ namespace BenchmarkTreeOptimization.Backends.MMAP
             return true;
         }
 
-        private sealed class TrieNode
-        {
-            private Dictionary<byte, TrieNode>? _children;
-
-            public byte[]? ValueBytes;
-
-            private TrieNode() { }
-
-            public static TrieNode CreateRoot() => new TrieNode();
-
-            public int ChildrenCount => _children?.Count ?? 0;
-
-            public TrieNode GetOrCreateChild(byte label)
-            {
-                _children ??= new Dictionary<byte, TrieNode>(capacity: 4);
-                if (!_children.TryGetValue(label, out var child))
-                {
-                    child = new TrieNode();
-                    _children[label] = child;
-                }
-                return child;
-            }
-
-            public bool TryGetChild(byte label, out TrieNode child)
-            {
-                if (_children is null)
-                {
-                    child = null!;
-                    return false;
-                }
-                return _children.TryGetValue(label, out child!);
-            }
-
-            public void RemoveChild(byte label)
-            {
-                _children?.Remove(label);
-                if (_children is { Count: 0 })
-                    _children = null;
-            }
-
-            public List<(byte label, TrieNode node)> GetChildrenSorted()
-            {
-                if (_children is null || _children.Count == 0)
-                    return new List<(byte, TrieNode)>(0);
-
-                var list = new List<(byte, TrieNode)>(_children.Count);
-                foreach (var kv in _children)
-                    list.Add((kv.Key, kv.Value));
-
-                list.Sort(static (a, b) => a.Item1.CompareTo(b.Item1));
-                return list;
-            }
-
-            public TrieNode Clone()
-            {
-                var n = new TrieNode();
-
-                if (ValueBytes is not null)
-                {
-                    var copy = new byte[ValueBytes.Length];
-                    Buffer.BlockCopy(ValueBytes, 0, copy, 0, copy.Length);
-                    n.ValueBytes = copy;
-                }
-
-                if (_children is null || _children.Count == 0)
-                    return n;
-
-                n._children = new Dictionary<byte, TrieNode>(_children.Count);
-                foreach (var kv in _children)
-                    n._children[kv.Key] = kv.Value.Clone();
-
-                return n;
-            }
-        }
-
-        // -----------------------------
-        // Enumerator over active mmap snapshot
-        // -----------------------------
-
-        private sealed class MmapEnumerator : IEnumerator<TValue>
-        {
-            private readonly MmapBackend<TKey, TValue> _owner;
-            private ActiveLease _lease;
-            private readonly bool _reverse;
-
-            private long[] _stack;
-            private int _sp;
-            private bool _started;
-            private TValue? _current;
-
-            public MmapEnumerator(MmapBackend<TKey, TValue> owner, ActiveLease lease, bool reverse)
-            {
-                _owner = owner;
-                _lease = lease;
-                _reverse = reverse;
-                _stack = new long[256];
-                _sp = 0;
-            }
-
-            public TValue Current => _current ?? throw new InvalidOperationException();
-            object IEnumerator.Current => Current;
-
-            public bool MoveNext()
-            {
-                _owner.ThrowIfDisposed();
-
-                if (!_started)
-                {
-                    _started = true;
-                    Push(_lease.State.RootPos);
-                }
-
-                while (_sp > 0)
-                {
-                    long pos = Pop();
-                    ref readonly var node = ref _lease.State.GetNodeAt(pos);
-
-                    // DFS stack ordering:
-                    // - Forward: children are stored sorted ascending; push in reverse so visit ascending.
-                    // - Reverse: push in ascending so visit descending.
-                    if (node.ChildCount != 0 && node.FirstChildPos != 0)
-                    {
-                        if (_reverse)
-                        {
-                            for (long i = 0; i < node.ChildCount; i++)
-                                Push(node.FirstChildPos + i * sizeof(MmapNode));
-                        }
-                        else
-                        {
-                            for (long i = (long)node.ChildCount - 1; i >= 0; i--)
-                                Push(node.FirstChildPos + i * sizeof(MmapNode));
-                        }
-                    }
-
-                    if (_lease.State.TryReadValueBytes(node, out var payload))
-                    {
-                        _current = _owner._codec.Decode(payload);
-                        return true;
-                    }
-                }
-
-                _current = null;
-                return false;
-            }
-
-            public void Reset()
-            {
-                _sp = 0;
-                _started = false;
-                _current = null;
-            }
-
-            public void Dispose() => _lease.Dispose();
-
-            private void Push(long pos)
-            {
-                if (_sp == _stack.Length)
-                {
-                    var n = new long[_stack.Length * 2];
-                    Array.Copy(_stack, n, _stack.Length);
-                    _stack = n;
-                }
-                _stack[_sp++] = pos;
-            }
-
-            private long Pop() => _stack[--_sp];
-        }
-
-        // -----------------------------
-        // State: immutable mmap snapshot (ref-counted)
-        // -----------------------------
-
-        private sealed class State
-        {
-            private readonly MemoryMappedFile _mmf;
-            private readonly MemoryMappedViewAccessor _accessor;
-            private readonly byte* _base;
-            private readonly long _fileSize;
-            private readonly bool _pointerAcquired;
-
-            public readonly MmapHeader Header;
-            public readonly long RootPos;
-
-            private int _refCount;
-
-            private State(MemoryMappedFile mmf, MemoryMappedViewAccessor accessor, byte* @base, bool pointerAcquired, long fileSize, in MmapHeader header)
-            {
-                _mmf = mmf;
-                _accessor = accessor;
-                _base = @base;
-                _pointerAcquired = pointerAcquired;
-                _fileSize = fileSize;
-
-                Header = header;
-                RootPos = header.NodeRegionOffset; // root is node index 0 => offset NodeRegionOffset
-
-                _refCount = 1; // publisher ref
-            }
-
-            public static State OpenReadOnly(string filePath)
-            {
-                var fi = new FileInfo(filePath);
-                if (!fi.Exists) throw new FileNotFoundException("MMAP file not found.", filePath);
-
-                long fileSize = fi.Length;
-                if (fileSize < sizeof(MmapHeader) + sizeof(MmapNode))
-                    throw new InvalidDataException("MMAP file too small.");
-
-                var mmf = MemoryMappedFile.CreateFromFile(filePath, FileMode.Open, null, 0, MemoryMappedFileAccess.Read);
-                var accessor = mmf.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read);
-
-                byte* ptr = null;
-                bool acquired = false;
-
-                try
-                {
-                    accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref ptr);
-                    acquired = true;
-
-                    ref readonly var hdr = ref Unsafe.AsRef<MmapHeader>(ptr);
-
-                    if (hdr.Magic != DomainTreeMmapFormat.Magic) throw new InvalidDataException("Invalid magic.");
-                    if (hdr.Version != DomainTreeMmapFormat.Version) throw new InvalidDataException("Unsupported version.");
-                    if (hdr.Endianness != DomainTreeMmapFormat.LittleEndian) throw new InvalidDataException("Endian mismatch.");
-
-                    if (hdr.NodeRegionOffset < sizeof(MmapHeader)) throw new InvalidDataException("Invalid NodeRegionOffset.");
-                    if (hdr.NodeCount < 1) throw new InvalidDataException("Invalid NodeCount.");
-
-                    long nodeBytes = checked(hdr.NodeCount * (long)sizeof(MmapNode));
-                    long valueRegionMin = checked(hdr.NodeRegionOffset + nodeBytes);
-
-                    if (hdr.ValueRegionOffset < valueRegionMin) throw new InvalidDataException("Invalid ValueRegionOffset.");
-                    if (hdr.ValueRegionOffset > fileSize) throw new InvalidDataException("ValueRegionOffset out of range.");
-
-                    // Root bounds check (node 0)
-                    if (!IsOffsetValidStatic(fileSize, hdr.NodeRegionOffset, sizeof(MmapNode)))
-                        throw new InvalidDataException("Root node out of range.");
-
-                    return new State(mmf, accessor, ptr, acquired, fileSize, hdr);
-                }
-                catch
-                {
-                    try
-                    {
-                        if (acquired) accessor.SafeMemoryMappedViewHandle.ReleasePointer();
-                    }
-                    catch { /* best-effort */ }
-
-                    accessor.Dispose();
-                    mmf.Dispose();
-                    throw;
-                }
-            }
-
-            public void AddRef() => Interlocked.Increment(ref _refCount);
-
-            public void Release()
-            {
-                if (Interlocked.Decrement(ref _refCount) == 0)
-                    DisposeNow();
-            }
-
-            public void RetireAndTryDispose()
-            {
-                Release(); // drop publisher ref; actual dispose occurs when last reader releases
-            }
-
-            private void DisposeNow()
-            {
-                try
-                {
-                    if (_pointerAcquired)
-                        _accessor.SafeMemoryMappedViewHandle.ReleasePointer();
-                }
-                catch { /* best-effort */ }
-
-                _accessor.Dispose();
-                _mmf.Dispose();
-            }
-
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public ref readonly MmapNode GetNodeAt(long offset)
-            {
-#if !MMAP_UNSAFE_FAST
-                if (!IsOffsetValid(offset, sizeof(MmapNode)))
-                    throw new InvalidDataException("Node offset out of range.");
-#endif
-                return ref Unsafe.AsRef<MmapNode>(_base + offset);
-            }
-
-            public bool TryFindNode(MmapBackend<TKey, TValue> owner, TKey key, out long nodePos, bool requireValue)
-            {
-                nodePos = 0;
-
-                byte[]? bKey;
-                try { bKey = owner.ConvertToByteKey(key, throwException: false); }
-                catch { return false; }
-
-                if (bKey is null)
-                    return false;
-
-                long currentPos = RootPos;
-
-                // Empty key => root
-                if (bKey.Length == 0)
-                {
-                    ref readonly var root = ref GetNodeAt(currentPos);
-                    if (requireValue && root.ValueOffset == 0) return false;
-                    nodePos = currentPos;
-                    return true;
-                }
-
-                for (int i = 0; i < bKey.Length; i++)
-                {
-                    ref readonly var node = ref GetNodeAt(currentPos);
-                    if (node.ChildCount == 0 || node.FirstChildPos == 0)
-                        return false;
-
-                    uint labelId = DomainTreeMmapFormat.ToLabelId(bKey[i]);
-                    long childPos = FindChild(node.FirstChildPos, node.ChildCount, labelId);
-                    if (childPos == 0)
-                        return false;
-
-                    currentPos = childPos;
-                }
-
-                ref readonly var finalNode = ref GetNodeAt(currentPos);
-                if (requireValue && finalNode.ValueOffset == 0)
-                    return false;
-
-                nodePos = currentPos;
-                return true;
-            }
-
-            public bool TryReadValueBytes(in MmapNode node, out ReadOnlySpan<byte> payload)
-            {
-                if (node.ValueOffset == 0)
-                {
-                    payload = default;
-                    return false;
-                }
-
-                long abs = checked(Header.ValueRegionOffset + node.ValueOffset);
-
-#if !MMAP_UNSAFE_FAST
-                // Need at least 4 bytes for length prefix
-                if (!IsOffsetValid(abs, 4))
-                    throw new InvalidDataException("Value prefix out of range.");
-#endif
-
-                byte* p = _base + abs;
-                int len = *(int*)p;
-
-                if (len < 0)
-                    throw new InvalidDataException("Negative value length.");
-
-                if (node.ValueLength != len)
-                    throw new InvalidDataException("ValueLength mismatch.");
-
-#if !MMAP_UNSAFE_FAST
-                if (!IsOffsetValid(abs + 4L, len))
-                    throw new InvalidDataException("Value payload out of range.");
-#endif
-
-                payload = new ReadOnlySpan<byte>(p + 4, len);
-                return true;
-            }
-
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            private long FindChild(long firstChildPos, uint childCount, uint labelId)
-            {
-#if !MMAP_UNSAFE_FAST
-                long bytes = checked((long)childCount * sizeof(MmapNode));
-                if (!IsOffsetValid(firstChildPos, bytes))
-                    throw new InvalidDataException("Children region out of range.");
-#endif
-                long lo = 0;
-                long hi = (long)childCount - 1;
-
-                while (lo <= hi)
-                {
-                    long mid = lo + ((hi - lo) >> 1);
-                    long pos = firstChildPos + mid * sizeof(MmapNode);
-
-                    ref readonly var n = ref GetNodeAt(pos);
-                    uint midId = n.LabelId;
-
-                    if (midId == labelId) return pos;
-                    if (midId < labelId) lo = mid + 1;
-                    else hi = mid - 1;
-                }
-
-                return 0;
-            }
-
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            private bool IsOffsetValid(long offset, long length)
-                => IsOffsetValidStatic(_fileSize, offset, length);
-
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            private static bool IsOffsetValidStatic(long fileSize, long offset, long length)
-            {
-                if (length < 0) return false;
-                if ((ulong)offset >= (ulong)fileSize) return false;
-                long end = offset + length;
-                return end >= offset && end <= fileSize;
-            }
-        }
-
-        // -----------------------------
-        // Dispose
-        // -----------------------------
-
         private void ThrowIfDisposed()
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
         }
 
-        public void Dispose()
-        {
-            if (_disposed) return;
-            _disposed = true;
+        #region Dispose
 
-            var s = Interlocked.Exchange(ref _active, null);
-            if (s is not null)
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!_disposed)
             {
-                // Drop publisher ref; actual dispose occurs when last reader finishes.
-                s.RetireAndTryDispose();
+                if (disposing)
+                {
+                    var s = Interlocked.Exchange(ref _active, null);
+                    if (s is not null)
+                    {
+                        // Drop publisher ref; actual dispose occurs when last reader finishes.
+                        s.RetireAndTryDispose();
+                    }
+                }
+                _disposed = true;
             }
         }
+
+        public void Dispose()
+        {
+            // Do not change this code. Put cleanup code in 'Dispose(bool disposing)' method
+            Dispose(disposing: true);
+            GC.SuppressFinalize(this);
+        }
+        #endregion Dispose
     }
 }
