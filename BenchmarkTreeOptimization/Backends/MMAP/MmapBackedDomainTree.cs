@@ -17,23 +17,23 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 */
 
+using BenchmarkTreeOptimization.Codecs;
+using LightningDB;
+using System;
 using System.Text;
 
-namespace BenchmarkTreeOptimization
-
+namespace BenchmarkTreeOptimization.Backends.MMAP
 {
-    public class OptimizedDomainTree<T> : ByteTree<string, T> where T : class
+    /// <summary>
+    /// Disk-backed replacement for the old in-memory DomainTree<T>.
+    /// Implements ITree&lt;string, T&gt; via LMDB, using the same domain-to-byte-key mapping.
+    /// </summary>
+    public sealed class MmapBackedDomainTree<T> : MmapBackend<string, T> where T : class
     {
-        #region variables
-
         private static readonly byte[] _keyMap;
         private static readonly byte[] _reverseKeyMap;
 
-        #endregion variables
-
-        #region constructor
-
-        static OptimizedDomainTree()
+        static MmapBackedDomainTree()
         {
             _keyMap = new byte[256];
             _reverseKeyMap = new byte[41];
@@ -51,7 +51,7 @@ namespace BenchmarkTreeOptimization
                 else if (i == 42) //[*]
                 {
                     keyCode = 1;
-                    _keyMap[i] = 0xff; //skipped value for optimization
+                    _keyMap[i] = 0xff; // skipped value for optimization
                     _reverseKeyMap[keyCode] = (byte)i;
                 }
                 else if (i == 45) //[-]
@@ -68,7 +68,7 @@ namespace BenchmarkTreeOptimization
                 }
                 else if ((i >= 48) && (i <= 57)) //[0-9]
                 {
-                    keyCode = i - 44; //4 - 13
+                    keyCode = i - 44; // 4 - 13
                     _keyMap[i] = (byte)keyCode;
                     _reverseKeyMap[keyCode] = (byte)i;
                 }
@@ -80,13 +80,13 @@ namespace BenchmarkTreeOptimization
                 }
                 else if ((i >= 97) && (i <= 122)) //[a-z]
                 {
-                    keyCode = i - 82; //15 - 40
+                    keyCode = i - 82; // 15 - 40
                     _keyMap[i] = (byte)keyCode;
                     _reverseKeyMap[keyCode] = (byte)i;
                 }
                 else if ((i >= 65) && (i <= 90)) //[A-Z]
                 {
-                    keyCode = i - 50; //15 - 40
+                    keyCode = i - 50; // 15 - 40
                     _keyMap[i] = (byte)keyCode;
                 }
                 else
@@ -96,25 +96,31 @@ namespace BenchmarkTreeOptimization
             }
         }
 
-        public OptimizedDomainTree()
-            : base(41)
-        { }
+        /// <summary>
+        /// Create/open a disk-backed domain tree in an LMDB environment directory.
+        /// </summary>
+        public MmapBackedDomainTree(
+          string filePath,
+            IValueCodec<T> codec)
+            : base(
+                filePath: filePath,
+                codec: codec)
+        {
+        }
 
-        #endregion constructor
-
-        #region protected
-
+        /// <summary>
+        /// Converts a domain name into a reversed-label byte key, identical to the old DomainTree implementation.
+        /// </summary>
         public override byte[]? ConvertToByteKey(string domain, bool throwException = true)
         {
-            if (domain.Length == 0)
-                return [];
-
-            if (domain[^1] == '.')
+            if (domain is null)
             {
-                if (throwException)
-                    throw new InvalidDomainNameException("Invalid domain name [" + domain + "]: label length cannot be 0 byte.");
+                if (throwException) throw new ArgumentNullException(nameof(domain));
                 return null;
             }
+
+            if (domain.Length == 0)
+                return [];
 
             if (domain.Length > 255)
             {
@@ -124,25 +130,30 @@ namespace BenchmarkTreeOptimization
                 return null;
             }
 
-            // Worst case: every label adds 1 length byte, so encoded length can exceed domain.Length.
-            // Allocate enough for speed (stack) and enforce final <= 255.
-            Span<byte> key = stackalloc byte[Math.Min(512, domain.Length * 2)];
-            int keyPos = 0, strPos = 0;
+            // +1 for terminal dot marker (0)
+            byte[] key = new byte[domain.Length + 1];
+
+            int keyOffset = 0;
+            int labelStart;
+            int labelEnd = domain.Length - 1;
+            int labelLength;
             int labelChar;
             byte labelKeyCode;
+            int i;
 
-            while (strPos < domain.Length)
+            do
             {
-                int labelStart = strPos;
-                while (strPos < domain.Length && domain[strPos] != '.') strPos++;
+                if (labelEnd < 0)
+                    labelEnd = 0;
 
-                int labelLength = strPos - labelStart;
-                int labelEnd = strPos - 1;
+                labelStart = domain.LastIndexOf('.', labelEnd);
+                labelLength = labelEnd - labelStart;
 
                 if (labelLength == 0)
                 {
                     if (throwException)
                         throw new InvalidDomainNameException("Invalid domain name [" + domain + "]: label length cannot be 0 byte.");
+
                     return null;
                 }
 
@@ -150,14 +161,15 @@ namespace BenchmarkTreeOptimization
                 {
                     if (throwException)
                         throw new InvalidDomainNameException("Invalid domain name [" + domain + "]: label length cannot exceed 63 bytes.");
+
                     return null;
                 }
 
-                // Correct "starts with hyphen" check (bug fix vs domain[labelStart + 1])
-                if (domain[labelStart] == '-')
+                if (domain[labelStart + 1] == '-')
                 {
                     if (throwException)
                         throw new InvalidDomainNameException("Invalid domain name [" + domain + "]: label cannot start with hyphen.");
+
                     return null;
                 }
 
@@ -165,35 +177,25 @@ namespace BenchmarkTreeOptimization
                 {
                     if (throwException)
                         throw new InvalidDomainNameException("Invalid domain name [" + domain + "]: label cannot end with hyphen.");
+
                     return null;
                 }
 
-                // Ensure capacity
-                if (keyPos + 1 + labelLength > key.Length)
+                if ((labelLength == 1) && (domain[labelStart + 1] == '*')) //[*]
                 {
-                    // Fallback to heap if extremely pathological; still enforce <=255 below.
-                    byte[] tmp = new byte[(domain.Length + 1) * 2];
-                    key.CopyTo(tmp);
-                    key = tmp;
-                }
-
-                // Single-label wildcard support like DefaultDomainTree
-                if (labelLength == 1 && domain[labelStart] == '*')
-                {
-                    key[keyPos++] = 1;   // label length = 1
-                    key[keyPos++] = 1;   // wildcard token (same as DefaultDomainTree key code)
+                    key[keyOffset++] = 1;
                 }
                 else
                 {
-                    key[keyPos++] = (byte)labelLength;
-
-                    for (int i = labelStart; i < strPos; i++)
+                    for (i = labelStart + 1; i <= labelEnd; i++)
                     {
                         labelChar = domain[i];
+
                         if ((uint)labelChar >= (uint)_keyMap.Length)
                         {
                             if (throwException)
                                 throw new InvalidDomainNameException("Invalid domain name [" + domain + "]: invalid character [" + labelChar + "] was found.");
+
                             return null;
                         }
 
@@ -202,69 +204,46 @@ namespace BenchmarkTreeOptimization
                         {
                             if (throwException)
                                 throw new InvalidDomainNameException("Invalid domain name [" + domain + "]: invalid character [" + labelChar + "] was found.");
+
                             return null;
                         }
 
-                        key[keyPos++] = labelKeyCode;
+                        key[keyOffset++] = labelKeyCode;
                     }
                 }
 
-                if (strPos < domain.Length) strPos++; // skip '.'
+                key[keyOffset++] = 0; //[.]
+                labelEnd = labelStart - 1;
             }
+            while (labelStart > -1);
 
-            // Enforce DNS max name length in bytes (wire format).
-            if (keyPos > 255)
-            {
-                if (throwException)
-                    throw new InvalidDomainNameException("Invalid domain name [" + domain + "]: encoded length cannot exceed 255 bytes.");
-                return null;
-            }
-
-            return key.Slice(0, keyPos).ToArray();
+            return key;
         }
 
-        protected static string? ConvertKeyToLabel(byte[] key, int startIndex)
+        /// <summary>
+        /// Optional helper: convert a key slice back into an ASCII label.
+        /// Kept identical to the old DomainTree behavior.
+        /// </summary>
+        public static string? ConvertKeyToLabel(byte[] key, int startIndex)
         {
             int length = key.Length - startIndex;
             if (length < 1)
                 return null;
 
-            // Wire format: [len][label-bytes...]
-            int len = key[startIndex];
-            if (len == 0)
-                return string.Empty;
+            Span<byte> domain = stackalloc byte[length];
+            int i;
+            int k;
 
-            if (len < 0 || len > 63 || length < 1 + len)
-                return null;
-
-            Span<byte> label = stackalloc byte[len];
-            for (int i = 0; i < len; i++)
+            for (i = 0; i < domain.Length; i++)
             {
-                int k = key[startIndex + 1 + i];
-                if ((uint)k >= (uint)_reverseKeyMap.Length)
-                    return null;
+                k = key[i + startIndex];
+                if (k == 0) //[.]
+                    break;
 
-                label[i] = _reverseKeyMap[k];
+                domain[i] = _reverseKeyMap[k];
             }
 
-            return Encoding.ASCII.GetString(label);
+            return Encoding.ASCII.GetString(domain.Slice(0, i));
         }
-
-        #endregion protected
-
-        #region public
-
-        public override bool TryRemove(string key, out T? value)
-        {
-            if (TryRemove(key, out value, out Node? currentNode))
-            {
-                currentNode!.CleanThisBranch();
-                return true;
-            }
-
-            return false;
-        }
-
-        #endregion public
     }
 }

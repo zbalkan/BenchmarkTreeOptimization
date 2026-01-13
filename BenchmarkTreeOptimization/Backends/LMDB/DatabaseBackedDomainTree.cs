@@ -17,23 +17,24 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 */
 
+using BenchmarkTreeOptimization.Codecs;
+using LightningDB;
+using System;
 using System.Text;
 
-namespace BenchmarkTreeOptimization
+namespace BenchmarkTreeOptimization.Backends.LMDB
 
 {
-    public class DefaultDomainTree<T> : ByteTree<string, T> where T : class
+    /// <summary>
+    /// Disk-backed replacement for the old in-memory DomainTree<T>.
+    /// Implements ITree&lt;string, T&gt; via LMDB, using the same domain-to-byte-key mapping.
+    /// </summary>
+    public sealed class DatabaseBackedDomainTree<T> : LmdbBackend<string, T> where T : class
     {
-        #region variables
-
         private static readonly byte[] _keyMap;
         private static readonly byte[] _reverseKeyMap;
 
-        #endregion variables
-
-        #region constructor
-
-        static DefaultDomainTree()
+        static DatabaseBackedDomainTree()
         {
             _keyMap = new byte[256];
             _reverseKeyMap = new byte[41];
@@ -51,7 +52,7 @@ namespace BenchmarkTreeOptimization
                 else if (i == 42) //[*]
                 {
                     keyCode = 1;
-                    _keyMap[i] = 0xff; //skipped value for optimization
+                    _keyMap[i] = 0xff; // skipped value for optimization
                     _reverseKeyMap[keyCode] = (byte)i;
                 }
                 else if (i == 45) //[-]
@@ -68,7 +69,7 @@ namespace BenchmarkTreeOptimization
                 }
                 else if ((i >= 48) && (i <= 57)) //[0-9]
                 {
-                    keyCode = i - 44; //4 - 13
+                    keyCode = i - 44; // 4 - 13
                     _keyMap[i] = (byte)keyCode;
                     _reverseKeyMap[keyCode] = (byte)i;
                 }
@@ -80,13 +81,13 @@ namespace BenchmarkTreeOptimization
                 }
                 else if ((i >= 97) && (i <= 122)) //[a-z]
                 {
-                    keyCode = i - 82; //15 - 40
+                    keyCode = i - 82; // 15 - 40
                     _keyMap[i] = (byte)keyCode;
                     _reverseKeyMap[keyCode] = (byte)i;
                 }
                 else if ((i >= 65) && (i <= 90)) //[A-Z]
                 {
-                    keyCode = i - 50; //15 - 40
+                    keyCode = i - 50; // 15 - 40
                     _keyMap[i] = (byte)keyCode;
                 }
                 else
@@ -96,16 +97,35 @@ namespace BenchmarkTreeOptimization
             }
         }
 
-        public DefaultDomainTree()
-            : base(41)
-        { }
+        /// <summary>
+        /// Create/open a disk-backed domain tree in an LMDB environment directory.
+        /// </summary>
+        public DatabaseBackedDomainTree(
+            string environmentPath,
+            IValueCodec<T> valueCodec,
+            string? databaseName = null,
+            DatabaseConfiguration? databaseConfiguration = null,
+            LmdbTreeOptions? options = null)
+            : base(
+                environmentPath: environmentPath,
+                databaseName: databaseName,
+                databaseConfiguration: databaseConfiguration,
+                options: options,
+                codec: valueCodec)
+        {
+        }
 
-        #endregion constructor
-
-        #region protected
-
+        /// <summary>
+        /// Converts a domain name into a reversed-label byte key, identical to the old DomainTree implementation.
+        /// </summary>
         public override byte[]? ConvertToByteKey(string domain, bool throwException = true)
         {
+            if (domain is null)
+            {
+                if (throwException) throw new ArgumentNullException(nameof(domain));
+                return null;
+            }
+
             if (domain.Length == 0)
                 return [];
 
@@ -117,7 +137,9 @@ namespace BenchmarkTreeOptimization
                 return null;
             }
 
+            // +1 for terminal dot marker (0)
             byte[] key = new byte[domain.Length + 1];
+
             int keyOffset = 0;
             int labelStart;
             int labelEnd = domain.Length - 1;
@@ -175,7 +197,8 @@ namespace BenchmarkTreeOptimization
                     for (i = labelStart + 1; i <= labelEnd; i++)
                     {
                         labelChar = domain[i];
-                        if (labelChar >= _keyMap.Length)
+
+                        if ((uint)labelChar >= (uint)_keyMap.Length)
                         {
                             if (throwException)
                                 throw new InvalidDomainNameException("Invalid domain name [" + domain + "]: invalid character [" + labelChar + "] was found.");
@@ -204,7 +227,11 @@ namespace BenchmarkTreeOptimization
             return key;
         }
 
-        protected static string? ConvertKeyToLabel(byte[] key, int startIndex)
+        /// <summary>
+        /// Optional helper: convert a key slice back into an ASCII label.
+        /// Kept identical to the old DomainTree behavior.
+        /// </summary>
+        public static string? ConvertKeyToLabel(byte[] key, int startIndex)
         {
             int length = key.Length - startIndex;
             if (length < 1)
@@ -225,22 +252,5 @@ namespace BenchmarkTreeOptimization
 
             return Encoding.ASCII.GetString(domain.Slice(0, i));
         }
-
-        #endregion protected
-
-        #region public
-
-        public override bool TryRemove(string key, out T? value)
-        {
-            if (TryRemove(key, out value, out Node? currentNode))
-            {
-                currentNode!.CleanThisBranch();
-                return true;
-            }
-
-            return false;
-        }
-
-        #endregion public
     }
 }

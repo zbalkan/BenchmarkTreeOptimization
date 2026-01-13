@@ -1,13 +1,21 @@
 ﻿using BenchmarkDotNet.Attributes;
+using BenchmarkTreeOptimization.Backends;
+using BenchmarkTreeOptimization.Backends.LMDB;
+using BenchmarkTreeOptimization.Backends.Memory;
+using BenchmarkTreeOptimization.Backends.MMAP;
+using BenchmarkTreeOptimization.Codecs;
+using System.IO;
 using System.Runtime.CompilerServices;
 
 namespace BenchmarkTreeOptimization
 {
+
     [MemoryDiagnoser]
     public class DomainTreeBenchmark
     {
-        private DefaultDomainTree<string> _defaultTree;
-        private OptimizedDomainTree<string> _optimizedTree;
+        private DomainTree<string> _defaultTree;
+        private DatabaseBackedDomainTree<string> _dbBackedTree;
+        private MmapBackedDomainTree<string> _mmapBackedTree;
 
         private const int N = 10_000_000;
 
@@ -36,35 +44,40 @@ namespace BenchmarkTreeOptimization
         [GlobalSetup]
         public void Setup()
         {
-            _defaultTree = new DefaultDomainTree<string>();
-            _optimizedTree = new OptimizedDomainTree<string>();
+            _defaultTree = new DomainTree<string>();
+            //_diskBackedTree = new DatabaseBackedDomainTree<string>("treetest", new Utf8StringCodec());
+            _dbBackedTree = new DatabaseBackedDomainTree<string>("treetest", new MessagePackCodec<string>());
+            _mmapBackedTree = new MmapBackedDomainTree<string>("treetest_mmap", new MessagePackCodec<string>());
 
-            LoadRealisticTree(_defaultTree);
-            LoadRealisticTree(_optimizedTree);
+            Seed(_defaultTree);
+            Seed(_dbBackedTree);
+            Seed(_mmapBackedTree);
+        }
 
-            // Warm-up
-            foreach (var d in TestDomains)
+        [GlobalCleanup]
+        public void Cleanup()
+        {
+            _defaultTree.Clear();
+            
+            _dbBackedTree.Dispose();
+            if (Directory.Exists("treetest"))
             {
-                _defaultTree.TryGet(d, out var a);
-                _optimizedTree.TryGet(d, out var b);
-
-                if (!Equals(a, b))
-                    throw new InvalidOperationException($"Mismatch for {d}");
+                Directory.Delete("treetest", true);
             }
         }
 
-        private void LoadRealisticTree(ByteTree<string,string> tree)
+        private void Seed(IBackend<string,string> tree)
         {
-            tree.Add("com", "com-root");
-            tree.Add("org", "org-root");
+            _ = tree.TryAdd("com", "com-root");
+            _ = tree.TryAdd("org", "org-root");
 
             var subs = new[] { "google", "microsoft", "github", "example" };
             foreach (var sub in subs)
             {
-                tree.Add($"{sub}.com", sub);
-                tree.Add($"www.{sub}.com", sub);
-                tree.Add($"api.{sub}.com", sub);
-                tree.Add($"mail.{sub}.com", sub);
+                _ = tree.TryAdd($"{sub}.com", sub);
+                _ = tree.TryAdd($"www.{sub}.com", sub);
+                _ = tree.TryAdd($"api.{sub}.com", sub);
+                _ = tree.TryAdd($"mail.{sub}.com", sub);
             }
 
             var deep = "a";
@@ -72,7 +85,7 @@ namespace BenchmarkTreeOptimization
                 deep = $"{deep}.a";
             deep += ".com";
 
-            tree.Add(deep, "deep");
+            _ = tree.TryAdd(deep, "deep");
         }
 
         // SAME workload, different trees
@@ -81,15 +94,24 @@ namespace BenchmarkTreeOptimization
         public void DefaultDomainTree()
         {
             for (int i = 0; i < N; i++)
-                _defaultTree.TryGet(TestDomains[i % 10], out _);
+                _defaultTree.TryGet(TestDomains[i % TestDomains.Length], out _);
         }
 
         [Benchmark]
         [MethodImpl(MethodImplOptions.NoInlining)]
-        public void OptimizedDomainTree()
+        public void DiskBackedDomainTree()
         {
             for (int i = 0; i < N; i++)
-                _optimizedTree.TryGet(TestDomains[i % 10], out _);
+                _dbBackedTree.TryGet(TestDomains[i % TestDomains.Length], out _);
+        }
+
+
+        [Benchmark]
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        public void MmapBackedDomainTree()
+        {
+            for (int i = 0; i < N; i++)
+                _mmapBackedTree.TryGet(TestDomains[i % TestDomains.Length], out _);
         }
     }
 }
