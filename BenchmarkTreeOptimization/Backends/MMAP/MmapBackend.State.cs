@@ -35,7 +35,7 @@ using System.Threading;
 
 namespace BenchmarkTreeOptimization.Backends.MMAP
 {
-public abstract unsafe partial class MmapBackend<TKey, TValue> where TValue : class
+    public abstract unsafe partial class MmapBackend<TKey, TValue> where TValue : class
     {
         // -----------------------------
         // State: immutable mmap snapshot (ref-counted)

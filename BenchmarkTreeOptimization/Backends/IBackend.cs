@@ -17,7 +17,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 */
 
-
 using System;
 using System.Collections.Generic;
 
@@ -30,17 +29,29 @@ namespace BenchmarkTreeOptimization.Backends
         bool IsEmpty { get; }
 
         void Add(TKey key, TValue value);
+
         TValue AddOrUpdate(TKey key, Func<TKey, TValue> addValueFactory, Func<TKey, TValue, TValue> updateValueFactory);
+
         TValue AddOrUpdate(TKey key, TValue addValue, Func<TKey, TValue, TValue> updateValueFactory);
+
         void Clear();
+
         bool ContainsKey(TKey key);
+
         byte[]? ConvertToByteKey(TKey key, bool throwException = true);
+
         TValue GetOrAdd(TKey key, Func<TKey, TValue> valueFactory);
+
         TValue GetOrAdd(TKey key, TValue value);
+
         IEnumerable<TValue> GetReverseEnumerable();
+
         bool TryAdd(TKey key, TValue? value);
+
         bool TryGet(TKey key, out TValue value);
+
         bool TryRemove(TKey key, out TValue? value);
+
         bool TryUpdate(TKey key, TValue newValue, TValue comparisonValue);
     }
 }

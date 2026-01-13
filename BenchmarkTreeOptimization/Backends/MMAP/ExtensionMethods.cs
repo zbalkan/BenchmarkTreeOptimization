@@ -5,7 +5,7 @@ using System.Runtime.InteropServices;
 
 namespace BenchmarkTreeOptimization.Backends.MMAP
 {
-    public static  class ExtensionMethods
+    public static class ExtensionMethods
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void WriteStruct<T>(this BinaryWriter bw, in T value) where T : struct
@@ -15,6 +15,5 @@ namespace BenchmarkTreeOptimization.Backends.MMAP
             MemoryMarshal.Write(buf, ref tmp);
             bw.Write(buf);
         }
-
     }
 }

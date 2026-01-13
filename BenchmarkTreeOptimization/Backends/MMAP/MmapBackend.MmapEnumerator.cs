@@ -33,7 +33,7 @@ using System.Collections.Generic;
 
 namespace BenchmarkTreeOptimization.Backends.MMAP
 {
-public abstract unsafe partial class MmapBackend<TKey, TValue> where TValue : class
+    public abstract unsafe partial class MmapBackend<TKey, TValue> where TValue : class
     {
         // -----------------------------
         // Enumerator over active mmap snapshot

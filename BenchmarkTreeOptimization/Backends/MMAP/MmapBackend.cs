@@ -34,7 +34,6 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 
@@ -155,12 +154,15 @@ namespace BenchmarkTreeOptimization.Backends.MMAP
         private sealed class ReverseEnumerable : IEnumerable<TValue>
         {
             private readonly MmapBackend<TKey, TValue> _owner;
+
             public ReverseEnumerable(MmapBackend<TKey, TValue> owner) => _owner = owner;
+
             public IEnumerator<TValue> GetEnumerator()
             {
                 var lease = _owner.AcquireActive();
                 return new MmapEnumerator(_owner, lease, reverse: true);
             }
+
             IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
         }
 
@@ -393,7 +395,9 @@ namespace BenchmarkTreeOptimization.Backends.MMAP
         private readonly struct ActiveLease : IDisposable
         {
             public readonly State State;
+
             public ActiveLease(State s) => State = s;
+
             public void Dispose() => State.Release();
         }
 
@@ -786,6 +790,7 @@ namespace BenchmarkTreeOptimization.Backends.MMAP
             Dispose(disposing: true);
             GC.SuppressFinalize(this);
         }
+
         #endregion Dispose
     }
 }

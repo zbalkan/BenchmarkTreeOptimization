@@ -9,7 +9,6 @@ using System.Runtime.CompilerServices;
 
 namespace BenchmarkTreeOptimization
 {
-
     [MemoryDiagnoser]
     public class DomainTreeBenchmark
     {
@@ -58,7 +57,7 @@ namespace BenchmarkTreeOptimization
         public void Cleanup()
         {
             _defaultTree.Clear();
-            
+
             _dbBackedTree.Dispose();
             if (Directory.Exists("treetest"))
             {
@@ -66,7 +65,7 @@ namespace BenchmarkTreeOptimization
             }
         }
 
-        private void Seed(IBackend<string,string> tree)
+        private void Seed(IBackend<string, string> tree)
         {
             _ = tree.TryAdd("com", "com-root");
             _ = tree.TryAdd("org", "org-root");
@@ -104,7 +103,6 @@ namespace BenchmarkTreeOptimization
             for (int i = 0; i < N; i++)
                 _dbBackedTree.TryGet(TestDomains[i % TestDomains.Length], out _);
         }
-
 
         [Benchmark]
         [MethodImpl(MethodImplOptions.NoInlining)]

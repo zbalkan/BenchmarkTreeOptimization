@@ -32,7 +32,7 @@ using System.Collections.Generic;
 
 namespace BenchmarkTreeOptimization.Backends.MMAP
 {
-public abstract unsafe partial class MmapBackend<TKey, TValue> where TValue : class
+    public abstract unsafe partial class MmapBackend<TKey, TValue> where TValue : class
     {
         private sealed class TrieNode
         {
@@ -40,7 +40,8 @@ public abstract unsafe partial class MmapBackend<TKey, TValue> where TValue : cl
 
             public byte[]? ValueBytes;
 
-            private TrieNode() { }
+            private TrieNode()
+            { }
 
             public static TrieNode CreateRoot() => new TrieNode();
 

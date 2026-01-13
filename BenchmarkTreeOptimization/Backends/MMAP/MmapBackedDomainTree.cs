@@ -18,7 +18,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 using BenchmarkTreeOptimization.Codecs;
-using LightningDB;
 using System;
 using System.Text;
 

@@ -14,14 +14,12 @@ public class DomainTreeTests
     private DatabaseBackedDomainTree<string> _databaseBackedTree;
     private MmapBackedDomainTree<string> _mmapBackedTree;
 
-
     [TestInitialize]
     public void Setup()
     {
         _defaultTree = new DomainTree<string>();
         _databaseBackedTree = new DatabaseBackedDomainTree<string>("treetest", new MessagePackCodec<string>());
         _mmapBackedTree = new MmapBackedDomainTree<string>("treetest_mmap", new MessagePackCodec<string>());
-
     }
 
     [TestCleanup]
@@ -119,7 +117,6 @@ public class DomainTreeTests
         Assert.IsNull(exLmdb);
         Assert.IsNull(exMmap);
     }
-
 
     [TestMethod]
     [DataRow("domain..com", "label length")]

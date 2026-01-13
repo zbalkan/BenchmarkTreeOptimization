@@ -22,7 +22,7 @@ using System.Threading;
 
 namespace BenchmarkTreeOptimization
 {
-    public sealed class NodeValue<T>  where T : class
+    public sealed class NodeValue<T> where T : class
     {
         #region variables
 

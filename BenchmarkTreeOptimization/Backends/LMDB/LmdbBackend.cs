@@ -70,6 +70,7 @@ namespace BenchmarkTreeOptimization.Backends.LMDB
         #endregion constructor
 
         #region public
+
         public void Add(TKey key, TValue value)
         {
             ThrowIfDisposed();
@@ -267,6 +268,7 @@ namespace BenchmarkTreeOptimization.Backends.LMDB
         #endregion public
 
         #region private
+
         private byte[] GetKeyBytes(TKey key)
         {
             var bytes = ConvertToByteKey(key, true) ?? throw new InvalidOperationException("ConvertToByteKey returned null.");
@@ -317,10 +319,11 @@ namespace BenchmarkTreeOptimization.Backends.LMDB
         }
 
         private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, nameof(LmdbBackend<TKey, TValue>));
+
         #endregion private
 
-
         #region properties
+
         public bool IsEmpty
         {
             get
