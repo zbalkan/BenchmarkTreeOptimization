@@ -11,5 +11,7 @@
         public long NodeRegionOffset;
         public long ValueRegionOffset;
         public long ValueTail;     // Append pointer
+
+        public volatile int WriteInProgress;
     }
 }
