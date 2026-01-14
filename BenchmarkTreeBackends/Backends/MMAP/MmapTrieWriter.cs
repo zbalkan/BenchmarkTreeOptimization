@@ -31,8 +31,10 @@ namespace BenchmarkTreeBackends.Backends.MMAP
             BeginWrite();
             try
             {
-                uint index = 1; // root
+                // CRITICAL: Calculate max nodes from layout
+                long maxNodes = (_file.Header->ValueRegionOffset - _file.Header->NodeRegionOffset) / sizeof(MmapNode);
 
+                uint index = 1; // root
                 foreach (byte b in key)
                 {
                     ref var n = ref _file.GetNode(index);
@@ -41,13 +43,14 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                         uint next = p[b];
                         if (next == 0)
                         {
-                            // Single-writer: plain increment is fine.
-                            // NOTE: you should ensure file capacity elsewhere (or add checks here).
+                            // FIXED: Capacity check BEFORE increment
+                            if (_file.Header->NodeCount >= (uint)maxNodes)
+                                throw new InvalidOperationException($"Node capacity exceeded: {_file.Header->NodeCount}/{maxNodes}");
+
                             uint newIdx = _file.Header->NodeCount++;
                             p[b] = newIdx;
                             next = newIdx;
                         }
-
                         index = next;
                     }
                 }
