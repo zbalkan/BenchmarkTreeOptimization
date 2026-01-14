@@ -59,14 +59,20 @@ public class DomainTreeTests
         // Test TryGet parity
         bool foundBaseline = _defaultTree.TryGet(domain, out var valBaseline);
         bool foundLmdb = _databaseBackedTree.TryGet(domain, out var valLmdb);
+        bool foundMmap = _mmapBackedTree.TryGet(domain, out var valMmap);
         Assert.AreEqual(foundBaseline, foundLmdb, $"TryGet mismatch for: {domain}");
         Assert.AreEqual(valBaseline, valLmdb, $"Value mismatch for: {domain}");
+        Assert.AreEqual(foundBaseline, foundMmap, $"TryGet mismatch for: {domain}");
+        Assert.AreEqual(valBaseline, valMmap, $"Value mismatch for: {domain}");
 
         // Test TryRemove parity
         bool removedBaseline = _defaultTree.TryRemove(domain, out _);
         bool removedLmdb = _databaseBackedTree.TryRemove(domain, out _);
+        bool removedMmap = _mmapBackedTree.TryRemove(domain, out _);
         Assert.AreEqual(removedBaseline, removedLmdb, $"TryRemove mismatch for: {domain}");
         Assert.AreEqual(_defaultTree.IsEmpty, _databaseBackedTree.IsEmpty, "Trees should have identical IsEmpty state");
+        Assert.AreEqual(removedBaseline, removedMmap, $"TryRemove mismatch for: {domain}");
+        Assert.AreEqual(_defaultTree.IsEmpty, _mmapBackedTree.IsEmpty, "Trees should have identical IsEmpty state");
     }
 
     [TestMethod]
