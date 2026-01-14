@@ -62,6 +62,12 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                     return false;
 
                 // Append value blob: [int32 length][payload]
+                long valueRegionSize = _file.CapacityBytes - _file.Header->ValueRegionOffset;
+                long required = 4L + value.Length;
+                if (_file.Header->ValueTail + required > valueRegionSize)
+                    throw new InvalidOperationException(
+                        $"Value capacity exceeded: {_file.Header->ValueTail + required:N0}/{valueRegionSize:N0} bytes");
+
                 long off = _file.Header->ValueTail;
                 _file.Header->ValueTail = off + 4L + value.Length;
 
