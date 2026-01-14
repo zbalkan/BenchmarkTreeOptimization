@@ -169,12 +169,24 @@ namespace BenchmarkTreeBackends.Backends.MMAP
             {
                 nodeIndex = 0;
 
-                // Convert key to byte sequence (DNS wire-style or equivalent)
                 byte[]? keyBytes = owner.ConvertToByteKey(key);
-                if (keyBytes?.Length == 0)
+
+                // Null means "cannot encode key" (keep failing).
+                if (keyBytes is null)
                     return false;
 
-                // Root is always index 1 (index 0 = sentinel/null)
+                // Empty key means "root".
+                if (keyBytes.Length == 0)
+                {
+                    ref readonly var root = ref GetNodeAtIndex(1);
+
+                    if (requireValue && root.ValueOffset == 0)
+                        return false;
+
+                    nodeIndex = 1;
+                    return true;
+                }
+
                 uint currentIndex = 1;
 
                 for (int i = 0; i < keyBytes.Length; i++)
