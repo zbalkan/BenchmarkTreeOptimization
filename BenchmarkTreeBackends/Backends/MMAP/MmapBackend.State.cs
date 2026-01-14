@@ -74,7 +74,8 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                 if (!fi.Exists) throw new FileNotFoundException("MMAP file not found.", filePath);
 
                 long fileSize = fi.Length;
-                if (fileSize < sizeof(MmapHeader) + sizeof(MmapNode))
+                int minSize = sizeof(MmapHeader) + sizeof(MmapNode);
+                if (fileSize < minSize)
                     throw new InvalidDataException("MMAP file too small.");
 
                 var mmf = MemoryMappedFile.CreateFromFile(filePath, FileMode.Open, null, 0, MemoryMappedFileAccess.Read);

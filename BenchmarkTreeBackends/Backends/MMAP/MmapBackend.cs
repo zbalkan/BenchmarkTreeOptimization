@@ -69,7 +69,18 @@ namespace BenchmarkTreeBackends.Backends.MMAP
             if (!File.Exists(_filePath))
                 CreateEmptyFile(_filePath);
 
-            _active = State.OpenReadOnly(_filePath);
+
+            try
+            {
+                _active = State.OpenReadOnly(_filePath);
+            }
+            catch (InvalidDataException)
+            {
+                File.Delete(_filePath);
+                CreateEmptyFile(_filePath);
+                _active = State.OpenReadOnly(_filePath);
+            }
+
             _stagingRoot = TrieNode.CreateRoot();
             _stagingLoadedFromActive = false;
         }
@@ -242,7 +253,7 @@ namespace BenchmarkTreeBackends.Backends.MMAP
             {
                 EnsureStagingLoadedFromActive_NoLock();
 
-                if (!TrieTryGetValueBytes_NoLock(_stagingRoot, bKey, out var existing))
+                if (TrieTryGetValueBytes_NoLock(_stagingRoot, bKey, out var existing))
                     return _codec.Decode(existing);
 
                 var created = valueFactory(key);
@@ -267,7 +278,7 @@ namespace BenchmarkTreeBackends.Backends.MMAP
             {
                 EnsureStagingLoadedFromActive_NoLock();
 
-                if (!TrieTryGetValueBytes_NoLock(_stagingRoot, bKey, out var existing))
+                if (TrieTryGetValueBytes_NoLock(_stagingRoot, bKey, out var existing))
                 {
                     var existingValue = _codec.Decode(existing);
                     var updated = updateValueFactory(key, existingValue);
@@ -501,7 +512,7 @@ namespace BenchmarkTreeBackends.Backends.MMAP
             _stagingLoadedFromActive = true;
         }
 
-        private static void BuildFileFromTrie(TrieNode root, string outputPath, bool parallelWrite)
+        private void BuildFileFromTrie(TrieNode root, string outputPath, bool parallelWrite)
         {
             // Node 0 = sentinel, Node 1 = root
             var nodes = new List<MmapNode>(capacity: 1024);
