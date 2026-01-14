@@ -20,7 +20,9 @@ namespace BenchmarkTreeBackends.Backends.MMAP
 
             while (true)
             {
+#pragma warning disable CS0420 // A reference to a volatile field will not be treated as volatile
                 int before = Volatile.Read(ref _file.Header->WriteInProgress);
+#pragma warning restore CS0420 // A reference to a volatile field will not be treated as volatile
 
                 uint cur = 1;
                 bool ok = true;
@@ -31,33 +33,40 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                     fixed (uint* p = n.Children)
                     {
                         uint next = p[b];
-                        if (next == 0)
+                        if (next == 0) { ok = false; break; }
+
+                        cur = next;
+
+                        // CRITICAL: Validate node still exists post-traversal
+                        if (cur >= _file.Header->NodeCount)
                         {
                             ok = false;
                             break;
                         }
-                        cur = next;
                     }
                 }
 
+#pragma warning disable CS0420 // A reference to a volatile field will not be treated as volatile
                 int after = Volatile.Read(ref _file.Header->WriteInProgress);
-
-                if (IsWriteStable(before, after))
+#pragma warning restore CS0420 // A reference to a volatile field will not be treated as volatile
+                if (IsWriteStable(before, after) && ok)
                 {
                     index = cur;
-                    return ok;
+                    return true;
                 }
 
-                // Writer was active – retry
                 Thread.SpinWait(4);
             }
         }
+
 
         public bool TryGetValue(uint nodeIndex, out ReadOnlySpan<byte> value)
         {
             while (true)
             {
+#pragma warning disable CS0420 // A reference to a volatile field will not be treated as volatile
                 int before = Volatile.Read(ref _file.Header->WriteInProgress);
+#pragma warning restore CS0420 // A reference to a volatile field will not be treated as volatile
 
                 ref var n = ref _file.GetNode(nodeIndex);
 
@@ -69,7 +78,9 @@ namespace BenchmarkTreeBackends.Backends.MMAP
 
                 var span = _file.GetValue(n.ValueOffset, n.ValueLength);
 
+#pragma warning disable CS0420 // A reference to a volatile field will not be treated as volatile
                 int after = Volatile.Read(ref _file.Header->WriteInProgress);
+#pragma warning restore CS0420 // A reference to a volatile field will not be treated as volatile
 
                 if (IsWriteStable(before, after))
                 {
