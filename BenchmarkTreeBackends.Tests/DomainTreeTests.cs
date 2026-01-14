@@ -32,9 +32,9 @@ public class DomainTreeTests
         }
 
         _mmapBackedTree.Dispose();
-        if (System.IO.Directory.Exists("treetest_mmap"))
+        if (System.IO.File.Exists("treetest_mmap"))
         {
-            System.IO.Directory.Delete("treetest_mmap", true);
+            System.IO.File.Delete("treetest_mmap");
         }
     }
 
@@ -76,21 +76,18 @@ public class DomainTreeTests
     }
 
     [TestMethod]
-    [DataRow("", "empty string = root")]
-    public void Parity_EmptyDomain_BothAccept(string domain, string expectedReason)
+    public void Parity_EmptyDomain_BothAccept()
     {
-        string value = $"data-{domain}";
-
-        bool addedBaseline = _defaultTree.TryAdd(domain, value);
-        bool addedLmdb = _databaseBackedTree.TryAdd(domain, value);
-        bool addedMmap = _mmapBackedTree.TryAdd(domain, value);
-        Assert.AreEqual(addedBaseline, addedLmdb, $"TryAdd mismatch for: {domain} for LMDB backend.");
-        Assert.AreEqual(addedBaseline, addedMmap, $"TryAdd mismatch for: {domain} for MMAP backend");
+        bool addedBaseline = _defaultTree.TryAdd(string.Empty, string.Empty);
+        bool addedLmdb = _databaseBackedTree.TryAdd(string.Empty, string.Empty);
+        bool addedMmap = _mmapBackedTree.TryAdd(string.Empty, string.Empty);
+        Assert.AreEqual(addedBaseline, addedLmdb, $"TryAdd mismatch for: empty key-value for LMDB backend.");
+        Assert.AreEqual(addedBaseline, addedMmap, $"TryAdd mismatch for: empty key-value for MMAP backend");
     }
 
     [TestMethod]
-    [DataRow(null, "null")]
-    public void Parity_NullDomain_BothThrow(string domain, string expectedReason)
+    [DataRow(null)]
+    public void Parity_NullDomain_BothThrow(string domain)
     {
         // Default Tree
         var exBaseline = Assert.ThrowsExactly<ArgumentNullException>(() =>

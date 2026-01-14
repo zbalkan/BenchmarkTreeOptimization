@@ -102,7 +102,7 @@ namespace BenchmarkTreeBackends.Backends.MMAP
           string filePath,
             IValueCodec<T> codec)
             : base(
-                filePath: filePath,
+                path: filePath,
                 codec: codec)
         {
         }
