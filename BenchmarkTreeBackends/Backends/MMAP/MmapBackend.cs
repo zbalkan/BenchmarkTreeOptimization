@@ -58,24 +58,10 @@ namespace BenchmarkTreeBackends.Backends.MMAP
         {
             var b = ConvertToByteKey(key, true)!;
 
-            if (_reader.TryFindNode(b, out var idx) &&
-                _reader.TryGetValue(idx, out var payload))
-            {
-                var existing = _codec.Decode(payload);
-                var updated = updateValueFactory(key, existing);
-
-                lock (_lock)
-                {
-                    _writer.InsertOrUpdate(b, _codec.Encode(updated), overwrite: true);
-                }
-
-                return updated;
-            }
-
             lock (_lock)
             {
-                if (_reader.TryFindNode(b, out idx) &&
-                    _reader.TryGetValue(idx, out payload))
+                // ATOMIC: Check + act under single lock
+                if (_reader.TryFindNode(b, out var idx) && _reader.TryGetValue(idx, out var payload))
                 {
                     var existing = _codec.Decode(payload);
                     var updated = updateValueFactory(key, existing);
@@ -83,6 +69,7 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                     return updated;
                 }
 
+                // No existing - create new
                 var added = addValueFactory(key);
                 _writer.InsertOrUpdate(b, _codec.Encode(added), overwrite: true);
                 return added;
@@ -156,14 +143,9 @@ namespace BenchmarkTreeBackends.Backends.MMAP
         {
             var b = ConvertToByteKey(key, true)!;
 
-            if (_reader.TryFindNode(b, out var idx) &&
-                _reader.TryGetValue(idx, out var payload))
-                return _codec.Decode(payload);
-
             lock (_lock)
             {
-                if (_reader.TryFindNode(b, out idx) &&
-                    _reader.TryGetValue(idx, out payload))
+                if (_reader.TryFindNode(b, out var idx) && _reader.TryGetValue(idx, out var payload))
                     return _codec.Decode(payload);
 
                 var created = valueFactory(key);
