@@ -82,8 +82,29 @@ namespace BenchmarkTreeBackends.Backends.MMAP
             {
                 ObjectDisposedException.ThrowIf(_disposed, this);
                 using var lease = AcquireActive();
-                ref readonly var root = ref lease.State.GetNodeAt(lease.State.RootPos);
-                return root.ChildCount == 0 && root.ValueOffset == 0;
+
+                // Root is index 1
+                ref readonly var root = ref lease.State.GetNodeAtIndex(1);
+
+                if (root.ValueOffset != 0)
+                    return false;
+
+                unsafe
+                {
+                    fixed (MmapNode* n = &root)
+                    {
+                        uint* p = n->Children;
+
+                        for (int i = 0; i < 256; i++)
+                        {
+                            if (p[i] != 0)
+                                return false;
+                        }
+                    }
+                }
+
+
+                return true;
             }
         }
 
@@ -119,13 +140,13 @@ namespace BenchmarkTreeBackends.Backends.MMAP
             ObjectDisposedException.ThrowIf(_disposed, this);
             using var lease = AcquireActive();
 
-            if (!lease.State.TryFindNode(this, key, out long nodePos, requireValue: true))
+            if (!lease.State.TryFindNode(this, key, out uint nodeIndex, requireValue: true))
             {
                 value = null!;
                 return false;
             }
 
-            ref readonly var node = ref lease.State.GetNodeAt(nodePos);
+            ref readonly var node = ref lease.State.GetNodeAtIndex(nodeIndex);
             if (!lease.State.TryReadValueBytes(node, out ReadOnlySpan<byte> payload))
             {
                 value = null!;
@@ -418,23 +439,20 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                 Version = DomainTreeMmapFormat.Version,
                 Endianness = DomainTreeMmapFormat.LittleEndian,
                 NodeRegionOffset = headerSize,
-                NodeCount = 1,
-                ValueRegionOffset = headerSize + nodeSize
+                NodeCount = 2, // index 0 = sentinel/null, index 1 = root
+                ValueRegionOffset = headerSize + nodeSize * 2
             };
 
-            var root = new MmapNode
-            {
-                LabelId = 0,
-                FirstChildPos = 0,
-                ChildCount = 0,
-                ValueOffset = 0,
-                ValueLength = 0
-            };
+            var sentinel = new MmapNode(); // all zeros
+            var root = new MmapNode { LabelId = 0, ValueOffset = 0, ValueLength = 0 };
 
             using var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
             using var bw = new BinaryWriter(fs, Encoding.UTF8, leaveOpen: false);
+
             bw.WriteStruct(header);
+            bw.WriteStruct(sentinel);
             bw.WriteStruct(root);
+
             bw.Flush();
             fs.Flush(flushToDisk: true);
         }
@@ -447,32 +465,35 @@ namespace BenchmarkTreeBackends.Backends.MMAP
             using var lease = AcquireActive();
             _stagingRoot = TrieNode.CreateRoot();
 
-            var q = new Queue<(long pos, TrieNode tnode)>();
-            q.Enqueue((lease.State.RootPos, _stagingRoot));
+            var q = new Queue<(uint nodeIndex, TrieNode tnode)>();
+            q.Enqueue((1u, _stagingRoot)); // root index = 1
 
             while (q.Count > 0)
             {
-                var (pos, tnode) = q.Dequeue();
-                ref readonly var n = ref lease.State.GetNodeAt(pos);
+                var (idx, tnode) = q.Dequeue();
+                ref readonly var n = ref lease.State.GetNodeAtIndex(idx);
 
                 if (lease.State.TryReadValueBytes(n, out var payload))
                 {
-                    // staging owns memory; copy payload
                     var copy = payload.ToArray();
                     tnode.ValueBytes = copy;
                 }
 
-                if (n.ChildCount == 0 || n.FirstChildPos == 0)
-                    continue;
-
-                for (uint i = 0; i < n.ChildCount; i++)
+                unsafe
                 {
-                    long childPos = n.FirstChildPos + (long)i * sizeof(MmapNode);
-                    ref readonly var cn = ref lease.State.GetNodeAt(childPos);
-                    byte label = DomainTreeMmapFormat.FromLabelId(cn.LabelId);
+                    fixed (uint* p = n.Children)
+                    {
+                        for (int b = 0; b < 256; b++)
+                        {
+                            uint childIndex = p[b];
+                            if (childIndex == 0)
+                                continue;
 
-                    var childTrie = tnode.GetOrCreateChild(label);
-                    q.Enqueue((childPos, childTrie));
+                            byte label = (byte)b;
+                            var childTrie = tnode.GetOrCreateChild(label);
+                            q.Enqueue((childIndex, childTrie));
+                        }
+                    }
                 }
             }
 
@@ -481,88 +502,61 @@ namespace BenchmarkTreeBackends.Backends.MMAP
 
         private static void BuildFileFromTrie(TrieNode root, string outputPath, bool parallelWrite)
         {
-            // BFS build so each node’s direct children are contiguous and sorted by label.
+            // Node 0 = sentinel, Node 1 = root
             var nodes = new List<MmapNode>(capacity: 1024);
             var meta = new List<TrieNode>(capacity: 1024);
 
-            // Root at index 0
-            nodes.Add(new MmapNode
-            {
-                LabelId = 0,
-                FirstChildPos = 0,
-                ChildCount = 0,
-                ValueOffset = 0,
-                ValueLength = 0
-            });
+            nodes.Add(new MmapNode());              // index 0: sentinel
+            meta.Add(TrieNode.CreateRoot());        // unused placeholder
+
+            nodes.Add(new MmapNode { LabelId = 0 }); // index 1: root
             meta.Add(root);
 
             var q = new Queue<int>();
-            q.Enqueue(0);
+            q.Enqueue(1);
 
             while (q.Count > 0)
             {
                 int parentIndex = q.Dequeue();
                 var tnode = meta[parentIndex];
+                var parentNode = nodes[parentIndex];
 
                 var children = tnode.GetChildrenSorted();
                 if (children.Count == 0)
-                    continue;
-
-                int firstChildIndex = nodes.Count;
-
-                foreach (var (label, childTrie) in children)
                 {
-                    int childIndex = nodes.Count;
-
-                    nodes.Add(new MmapNode
-                    {
-                        LabelId = DomainTreeMmapFormat.ToLabelId(label),
-                        FirstChildPos = 0, // patch later
-                        ChildCount = 0,    // patch later
-                        ValueOffset = 0,   // patch later
-                        ValueLength = 0    // patch later
-                    });
-
-                    meta.Add(childTrie);
-                    q.Enqueue(childIndex);
+                    nodes[parentIndex] = parentNode;
+                    continue;
                 }
 
-                var parentNode = nodes[parentIndex];
-                parentNode.ChildCount = (uint)children.Count;
-                // temporarily store "first child index" in FirstChildPos; patch to byte offset later
-                parentNode.FirstChildPos = firstChildIndex;
+                unsafe
+                {
+                    uint* p = parentNode.Children;
+                    {
+                        foreach (var (label, childTrie) in children)
+                        {
+                            int childIndex = nodes.Count;
+
+                            p[label] = (uint)childIndex;
+
+                            nodes.Add(new MmapNode
+                            {
+                                LabelId = DomainTreeMmapFormat.ToLabelId(label),
+                                ValueOffset = 0,
+                                ValueLength = 0
+                            });
+
+                            meta.Add(childTrie);
+                            q.Enqueue(childIndex);
+                        }
+                    }
+                }
+
                 nodes[parentIndex] = parentNode;
             }
 
-            long headerSize = sizeof(MmapHeader);
-            long nodeSize = sizeof(MmapNode);
-
-            long nodeRegionOffset = headerSize;
-            long rootPos = nodeRegionOffset;
-
-            long valueRegionOffset = nodeRegionOffset + nodes.Count * nodeSize;
-
-            // Patch FirstChildPos -> absolute file offset
-            for (int i = 0; i < nodes.Count; i++)
-            {
-                var n = nodes[i];
-                if (n.ChildCount != 0)
-                {
-                    long firstChildIndex = n.FirstChildPos; // temporary index
-                    n.FirstChildPos = nodeRegionOffset + firstChildIndex * nodeSize;
-                }
-                else
-                {
-                    n.FirstChildPos = 0;
-                }
-
-                nodes[i] = n;
-            }
-
-            // Assign value offsets (relative to valueRegionOffset) in node order.
-            // Each blob entry: [int32 length][payload]
+            // Assign value offsets (relative to ValueRegionOffset)
             long valueCursor = 0;
-            for (int i = 0; i < nodes.Count; i++)
+            for (int i = 1; i < meta.Count; i++)
             {
                 var t = meta[i];
                 var n = nodes[i];
@@ -574,7 +568,6 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                 }
                 else
                 {
-                    // ValueOffset points to the length prefix location
                     n.ValueOffset = valueCursor;
                     n.ValueLength = t.ValueBytes.Length;
                     valueCursor += 4L + t.ValueBytes.Length;
@@ -582,6 +575,12 @@ namespace BenchmarkTreeBackends.Backends.MMAP
 
                 nodes[i] = n;
             }
+
+            long headerSize = sizeof(MmapHeader);
+            long nodeSize = sizeof(MmapNode);
+
+            long nodeRegionOffset = headerSize;
+            long valueRegionOffset = nodeRegionOffset + nodes.Count * nodeSize;
 
             var header = new MmapHeader
             {
@@ -610,19 +609,21 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                 fs.Write(hdrBuf);
             }
 
-            // Write nodes as one contiguous block
+            // Write nodes
             int totalNodeBytes = checked((int)(nodes.Count * nodeSize));
             byte[] nodeBlock = new byte[totalNodeBytes];
 
-            fixed (byte* p = nodeBlock)
+            unsafe
             {
-                for (int i = 0; i < nodes.Count; i++)
-                    *(MmapNode*)(p + i * nodeSize) = nodes[i];
+                fixed (byte* p = nodeBlock)
+                {
+                    for (int i = 0; i < nodes.Count; i++)
+                        *(MmapNode*)(p + i * nodeSize) = nodes[i];
+                }
             }
 
             if (parallelWrite && totalNodeBytes >= (8 << 20))
             {
-                // keep behavior as requested; effectively sequential writes
                 const int chunk = 4 << 20;
                 int offset = 0;
                 while (offset < totalNodeBytes)
@@ -637,7 +638,7 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                 fs.Write(nodeBlock, 0, totalNodeBytes);
             }
 
-            // Write value region (length-prefixed blobs) in node order
+            // Write value blobs
             for (int i = 0; i < meta.Count; i++)
             {
                 var vb = meta[i].ValueBytes;

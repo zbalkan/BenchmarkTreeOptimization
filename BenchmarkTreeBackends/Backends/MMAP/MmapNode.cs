@@ -32,12 +32,15 @@ using System.Runtime.InteropServices;
 namespace BenchmarkTreeBackends.Backends.MMAP
 {
     [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    public struct MmapNode
+    public unsafe struct MmapNode
     {
         public uint LabelId;        // for this trie, we use the byte itself as LabelId (0..255); root uses 0
         public long FirstChildPos;  // file offset (bytes) to first child node in node array; 0 if none
         public uint ChildCount;     // number of children
-
+        // Children are stored as node indices (NOT byte offsets).
+        // Index 0 is reserved as "null/no child".
+        // Root node is at index 1.
+        public fixed uint Children[256]; // 256-way direct table: ~1KB per node
         public long ValueOffset;    // relative to ValueRegionOffset; 0 = no value
         public int ValueLength;     // payload length in bytes (excluding the 4-byte length prefix)
     }

@@ -150,8 +150,13 @@ namespace BenchmarkTreeBackends.Backends.MMAP
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public ref readonly MmapNode GetNodeAt(long offset)
+            public ref readonly MmapNode GetNodeAtIndex(uint index)
             {
+#if !MMAP_UNSAFE_FAST
+                if (index >= (ulong)Header.NodeCount)
+                    throw new InvalidDataException("Node index out of range.");
+#endif
+                long offset = checked(Header.NodeRegionOffset + (long)index * sizeof(MmapNode));
 #if !MMAP_UNSAFE_FAST
                 if (!IsOffsetValid(offset, sizeof(MmapNode)))
                     throw new InvalidDataException("Node offset out of range.");
@@ -159,47 +164,44 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                 return ref Unsafe.AsRef<MmapNode>(_base + offset);
             }
 
-            public bool TryFindNode(MmapBackend<TKey, TValue> owner, TKey key, out long nodePos, bool requireValue)
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public bool TryFindNode(MmapBackend<TKey, TValue> owner, TKey key, out uint nodeIndex, bool requireValue)
             {
-                nodePos = 0;
+                nodeIndex = 0;
 
-                byte[]? bKey;
-                try { bKey = owner.ConvertToByteKey(key, throwException: false); }
-                catch { return false; }
-
-                if (bKey is null)
+                // Convert key to byte sequence (DNS wire-style or equivalent)
+                byte[]? keyBytes = owner.ConvertToByteKey(key);
+                if (keyBytes?.Length == 0)
                     return false;
 
-                long currentPos = RootPos;
+                // Root is always index 1 (index 0 = sentinel/null)
+                uint currentIndex = 1;
 
-                // Empty key => root
-                if (bKey.Length == 0)
+                for (int i = 0; i < keyBytes.Length; i++)
                 {
-                    ref readonly var root = ref GetNodeAt(currentPos);
-                    if (requireValue && root.ValueOffset == 0) return false;
-                    nodePos = currentPos;
-                    return true;
-                }
+                    byte label = keyBytes[i];
 
-                for (int i = 0; i < bKey.Length; i++)
-                {
-                    ref readonly var node = ref GetNodeAt(currentPos);
-                    if (node.ChildCount == 0 || node.FirstChildPos == 0)
+                    ref readonly var node = ref GetNodeAtIndex(currentIndex);
+
+                    uint nextIndex;
+                    unsafe
+                    {
+                        fixed (uint* p = node.Children)
+                            nextIndex = p[label];
+                    }
+
+                    if (nextIndex == 0)
                         return false;
 
-                    uint labelId = DomainTreeMmapFormat.ToLabelId(bKey[i]);
-                    long childPos = FindChild(node.FirstChildPos, node.ChildCount, labelId);
-                    if (childPos == 0)
-                        return false;
-
-                    currentPos = childPos;
+                    currentIndex = nextIndex;
                 }
 
-                ref readonly var finalNode = ref GetNodeAt(currentPos);
+                ref readonly var finalNode = ref GetNodeAtIndex(currentIndex);
+
                 if (requireValue && finalNode.ValueOffset == 0)
                     return false;
 
-                nodePos = currentPos;
+                nodeIndex = currentIndex;
                 return true;
             }
 
@@ -235,33 +237,6 @@ namespace BenchmarkTreeBackends.Backends.MMAP
 
                 payload = new ReadOnlySpan<byte>(p + 4, len);
                 return true;
-            }
-
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            private long FindChild(long firstChildPos, uint childCount, uint labelId)
-            {
-#if !MMAP_UNSAFE_FAST
-                long bytes = checked((long)childCount * sizeof(MmapNode));
-                if (!IsOffsetValid(firstChildPos, bytes))
-                    throw new InvalidDataException("Children region out of range.");
-#endif
-                long lo = 0;
-                long hi = (long)childCount - 1;
-
-                while (lo <= hi)
-                {
-                    long mid = lo + ((hi - lo) >> 1);
-                    long pos = firstChildPos + mid * sizeof(MmapNode);
-
-                    ref readonly var n = ref GetNodeAt(pos);
-                    uint midId = n.LabelId;
-
-                    if (midId == labelId) return pos;
-                    if (midId < labelId) lo = mid + 1;
-                    else hi = mid - 1;
-                }
-
-                return 0;
             }
 
             [MethodImpl(MethodImplOptions.AggressiveInlining)]

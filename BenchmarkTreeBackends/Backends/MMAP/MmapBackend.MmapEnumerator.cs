@@ -45,7 +45,7 @@ namespace BenchmarkTreeBackends.Backends.MMAP
             private ActiveLease _lease;
             private readonly bool _reverse;
 
-            private long[] _stack;
+            private uint[] _stack;
             private int _sp;
             private bool _started;
             private TValue? _current;
@@ -55,7 +55,7 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                 _owner = owner;
                 _lease = lease;
                 _reverse = reverse;
-                _stack = new long[256];
+                _stack = new uint[256];
                 _sp = 0;
             }
 
@@ -69,28 +69,37 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                 if (!_started)
                 {
                     _started = true;
-                    Push(_lease.State.RootPos);
+                    Push(1); // root index
                 }
 
                 while (_sp > 0)
                 {
-                    long pos = Pop();
-                    ref readonly var node = ref _lease.State.GetNodeAt(pos);
+                    uint idx = Pop();
+                    ref readonly var node = ref _lease.State.GetNodeAtIndex(idx);
 
-                    // DFS stack ordering:
-                    // - Forward: children are stored sorted ascending; push in reverse so visit ascending.
-                    // - Reverse: push in ascending so visit descending.
-                    if (node.ChildCount != 0 && node.FirstChildPos != 0)
+                    // Children traversal:
+                    // Forward: visit 0..255 => push reverse so stack pops ascending.
+                    // Reverse: visit 255..0 => push ascending so stack pops descending.
+                    unsafe
                     {
-                        if (_reverse)
+                        fixed (uint* p = node.Children)
                         {
-                            for (long i = 0; i < node.ChildCount; i++)
-                                Push(node.FirstChildPos + i * sizeof(MmapNode));
-                        }
-                        else
-                        {
-                            for (long i = (long)node.ChildCount - 1; i >= 0; i--)
-                                Push(node.FirstChildPos + i * sizeof(MmapNode));
+                            if (_reverse)
+                            {
+                                for (int b = 0; b <= 255; b++)
+                                {
+                                    uint c = p[b];
+                                    if (c != 0) Push(c);
+                                }
+                            }
+                            else
+                            {
+                                for (int b = 255; b >= 0; b--)
+                                {
+                                    uint c = p[b];
+                                    if (c != 0) Push(c);
+                                }
+                            }
                         }
                     }
 
@@ -114,18 +123,18 @@ namespace BenchmarkTreeBackends.Backends.MMAP
 
             public void Dispose() => _lease.Dispose();
 
-            private void Push(long pos)
+            private void Push(uint pos)
             {
                 if (_sp == _stack.Length)
                 {
-                    var n = new long[_stack.Length * 2];
+                    var n = new uint[_stack.Length * 2];
                     Array.Copy(_stack, n, _stack.Length);
                     _stack = n;
                 }
                 _stack[_sp++] = pos;
             }
 
-            private long Pop() => _stack[--_sp];
+            private uint Pop() => _stack[--_sp];
         }
     }
 }
