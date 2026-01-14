@@ -15,6 +15,7 @@ namespace BenchmarkTreeBackends
         private DomainTree<string> _defaultTree;
         private DatabaseBackedDomainTree<string> _dbBackedTree;
         private MmapBackedDomainTree<string> _mmapBackedTree;
+        private MmapBackedDomainTree<string> _mmapBackedTree2;
 
         private const int N = 10_000_000;
 
@@ -46,10 +47,12 @@ namespace BenchmarkTreeBackends
             _defaultTree = new DomainTree<string>();
             _dbBackedTree = new DatabaseBackedDomainTree<string>("treetest", new MessagePackCodec<string>());
             _mmapBackedTree = new MmapBackedDomainTree<string>("treetest_mmap", new MessagePackCodec<string>());
+            _mmapBackedTree2 = new MmapBackedDomainTree<string>("treetest_mmap2", new Utf8StringCodec());
 
             Seed(_defaultTree);
             Seed(_dbBackedTree);
             Seed(_mmapBackedTree);
+            Seed(_mmapBackedTree2);
         }
 
         [GlobalCleanup]
@@ -64,7 +67,7 @@ namespace BenchmarkTreeBackends
             }
         }
 
-        private void Seed(IBackend<string, string> tree)
+        private static void Seed(IBackend<string, string> tree)
         {
             _ = tree.TryAdd("com", "com-root");
             _ = tree.TryAdd("org", "org-root");
@@ -110,5 +113,14 @@ namespace BenchmarkTreeBackends
             for (int i = 0; i < N; i++)
                 _mmapBackedTree.TryGet(TestDomains[i % TestDomains.Length], out _);
         }
+
+        [Benchmark]
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        public void MmapBackedDomainTree2()
+        {
+            for (int i = 0; i < N; i++)
+                _mmapBackedTree2.TryGet(TestDomains[i % TestDomains.Length], out _);
+        }
+
     }
 }
