@@ -44,7 +44,6 @@ namespace BenchmarkTreeBackends
         public void Setup()
         {
             _defaultTree = new DomainTree<string>();
-            //_diskBackedTree = new DatabaseBackedDomainTree<string>("treetest", new Utf8StringCodec());
             _dbBackedTree = new DatabaseBackedDomainTree<string>("treetest", new MessagePackCodec<string>());
             _mmapBackedTree = new MmapBackedDomainTree<string>("treetest_mmap", new MessagePackCodec<string>());
 
