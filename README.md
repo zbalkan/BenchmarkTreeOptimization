@@ -4,22 +4,24 @@ This repository explores multiple storage backends for a high-performance DNS `D
 
 The same logical API (`IBackend<TKey, TValue>`) is implemented using three different storage strategies:
 
-| Backend                  | Storage Model          | Mutability             | Primary Goal         |
-| ------------------------ | ---------------------- | ---------------------- | -------------------- |
-| **DefaultDomainTree**    | In-memory object graph | Mutable                | Baseline correctness |
-| **DiskBackedDomainTree** | File + serialization   | Mutable                | Persistence          |
-| **MmapBackedDomainTree** | Memory-mapped file     | Immutable + Blue/Green | Read performance     |
+| Backend                   | Storage Model          | Primary Goal                   | Codec                      |
+| ------------------------- | ---------------------- | ------------------------------ | -------------------------- |
+| **DefaultDomainTree**     | In-memory object graph | Baseline correctness           | Native UTF8 string to byte |
+| **LmdbBackedDomainTree**  | LMDB + serialization   | Persistence                    | MessagePack                |
+| **MmapBackedDomainTree**  | Memory-mapped file     | Read performance + Persistence | MessagePack                |
+| **MmapBackedDomainTree2** | Memory-mapped file     | Read performance + Persistence | Native UTF8 string to byte |
 
 ---
 
 ## Benchmark Environment
 
 ```
-BenchmarkDotNet v0.15.8
-Windows 11 25H2 (10.0.26200.7462)
-AMD Ryzen AI 5 PRO 340 (6C / 12T)
-.NET SDK 10.0.101
-Runtime: .NET 9.0.11, RyuJIT x64
+
+BenchmarkDotNet v0.15.8, Windows 11 (10.0.26200.7462/25H2/2025Update/HudsonValley2)
+AMD Ryzen AI 5 PRO 340 w/ Radeon 840M 2.00GHz, 1 CPU, 12 logical and 6 physical cores
+.NET SDK 10.0.102
+  [Host]     : .NET 9.0.12 (9.0.12, 9.0.1225.60609), X64 RyuJIT x86-64-v4
+  DefaultJob : .NET 9.0.12 (9.0.12, 9.0.1225.60609), X64 RyuJIT x86-64-v4
 ```
 
 Workload:
@@ -29,22 +31,14 @@ Large realistic domain trees with deep hierarchies and frequent lookups.
 
 ## Benchmark Results
 
-```
+| Method                | Mean       | Error    | StdDev    | Median     | Ratio | RatioSD | Gen0        | Allocated | Alloc Ratio |
+|---------------------- |-----------:|---------:|----------:|-----------:|------:|--------:|------------:|----------:|------------:|
+| InMemoryDomainTree    |   813.8 ms | 11.34 ms |  10.05 ms |   812.3 ms |  1.00 |    0.02 |  53000.0000 | 425.49 MB |        1.00 |
+| LmdbBackedDomainTree  | 1,300.3 ms |  9.65 ms |   8.55 ms | 1,297.0 ms |  1.60 |    0.02 | 111000.0000 | 892.05 MB |        2.10 |
+| LmdbBackedDomainTree2 | 1,087.8 ms | 18.65 ms |  17.45 ms | 1,079.6 ms |  1.34 |    0.03 |  93000.0000 | 745.33 MB |        1.75 |
+| MmapBackedDomainTree  | 1,070.4 ms | 65.33 ms | 191.59 ms |   961.9 ms |  1.32 |    0.23 |  93000.0000 | 745.33 MB |        1.75 |
+| MmapBackedDomainTree2 |   775.9 ms | 14.16 ms |  15.74 ms |   775.6 ms |  0.95 |    0.02 |  75000.0000 | 598.61 MB |        1.41 |
 
-BenchmarkDotNet v0.15.8, Windows 11 (10.0.26200.7462/25H2/2025Update/HudsonValley2)
-AMD Ryzen AI 5 PRO 340 w/ Radeon 840M 2.00GHz, 1 CPU, 12 logical and 6 physical cores
-.NET SDK 10.0.101
-  [Host]     : .NET 9.0.11 (9.0.11, 9.0.1125.51716), X64 RyuJIT x86-64-v4
-  DefaultJob : .NET 9.0.11 (9.0.11, 9.0.1125.51716), X64 RyuJIT x86-64-v4
-
-
-```
-
-| Method               | Mean         | Error       | StdDev      | Ratio    | Gen0        | Allocated | Alloc Ratio |
-|--------------------- |-------------:|------------:|------------:|---------:|------------:|----------:|------------:|
-| DefaultDomainTree    |     615.5 ms |     5.18 ms |     4.85 ms |     1.00 |  53000.0000 | 425.49 MB |        1.00 |
-| DiskBackedDomainTree |   1,024.8 ms |     4.15 ms |     3.24 ms |     1.66 | 111000.0000 | 892.05 MB |        2.10 |
-| MmapBackedDomainTree | **506.8 ms** | **3.30 ms** | **2.93 ms** | **0.82** |  53000.0000 | 425.49 MB |        1.00 |
 
 
 ### Key observations
@@ -66,9 +60,9 @@ AMD Ryzen AI 5 PRO 340 w/ Radeon 840M 2.00GHz, 1 CPU, 12 logical and 6 physical 
 * High allocation pressure
 * Serves as correctness reference
 
-### 2. DiskBackedDomainTree (Serialized)
+### 2. LmdbBackedDomainTree (Serialized)
 
-* Stores nodes on disk
+* Stores nodes on LMDB database as a KV-store setup where keys are reversed: com.google.www, etc.
 * Requires per-lookup deserialization
 * Heavy allocations
 * Poor cache locality
@@ -110,57 +104,9 @@ This guarantees:
 
 ---
 
-## File Format (MMAP)
-
-```
-[MmapHeader]
-[MmapNode array]
-[Value blob region]
-```
-
-### Header
-
-Contains:
-
-* Magic (`MMAP`)
-* Version
-* Endianness
-* Node region offset
-* Node count
-* Value region offset
-
-### Node Layout
-
-Each node stores:
-
-* LabelId (byte)
-* FirstChildPos (offset)
-* ChildCount
-* ValueOffset (0 = no value)
-* ValueLength
-
-### Value Storage
-
-Values are stored in a **blob region**:
-
-```
-[int32 length][value bytes]
-```
-
-Nodes reference values via `(offset, length)`.
-
-This allows:
-
-* Arbitrary `TValue` sizes
-* Zero-copy decoding
-* No fixed 4-byte limitations
-* Safe deserialization
-
----
-
 ## Value Serialization
 
-All values are encoded using:
+All values are encoded using either native UTF8 string converter or MessagePack implementing the interface:
 
 ```csharp
 IValueCodec<TValue>
@@ -172,41 +118,6 @@ The codec is responsible for:
 * Decoding `ReadOnlySpan<byte> → TValue`
 
 MMAP never allocates new arrays during reads; decoding happens directly from mapped memory.
-
----
-
-## Safety Model
-
-By default:
-
-* All node offsets are bounds-checked
-* Header fields are validated
-* Corrupt files fail fast
-
-Optional:
-
-```csharp
-#define MMAP_UNSAFE_FAST
-```
-
-Disables bounds checks for trusted files when maximum speed is required.
-
----
-
-## Why MMAP Is Faster
-
-* Sequential memory layout
-* No object graph traversal
-* No per-lookup allocations
-* OS page cache does the heavy lifting
-* CPU cache-friendly traversal
-
-This makes MMAP ideal for:
-
-* DNS resolvers
-* Large blocklists
-* Passive DNS
-* Threat intel lookups
 
 ---
 
@@ -227,7 +138,7 @@ Including:
 * Enumeration
 * IsEmpty
 
-MMAP is read-optimized but still supports full mutation via staging + Swap.
+The functions are extracted from `ByteTree`.
 
 ---
 
@@ -253,17 +164,7 @@ Future work:
 
 ## Summary
 
-| Backend | Speed       | Allocations | Safety | Mutability |
-| ------- | ----------- | ----------- | ------ | ---------- |
-| Default | Medium      | High        | High   | Mutable    |
-| Disk    | Slow        | Very High   | Medium | Mutable    |
-| MMAP    | **Fastest** | **Low**     | High   | Immutable  |
-
-The MMAP backend provides the best balance of:
-
-**Performance + Safety + Predictability**
-
-for DNS-style workloads.
+As expected, in-memory data is the winner. Our custom memory-mapped file-backed binary ByteTree has shown similar performance to LMDB. The serizalization and memory allocations were the bottlenecks for resource usage. 
 
 ---
 
