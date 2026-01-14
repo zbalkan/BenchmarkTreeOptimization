@@ -110,7 +110,7 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                     yield break;
 
                 // Already in ascending byte order: 0..255
-                for (byte b = 0; b < 255; b++)
+                for (byte b = 0; b <= 255; b++)
                 {
                     var c = _children[b];
                     if (c is not null)
