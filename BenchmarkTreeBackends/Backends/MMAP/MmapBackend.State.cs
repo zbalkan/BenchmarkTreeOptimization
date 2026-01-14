@@ -195,17 +195,18 @@ namespace BenchmarkTreeBackends.Backends.MMAP
 
                     ref readonly var node = ref GetNodeAtIndex(currentIndex);
 
-                    uint nextIndex;
                     unsafe
                     {
-                        fixed (uint* p = node.Children)
-                            nextIndex = p[label];
+                        fixed (MmapNode* pn = &node)
+                        {
+                            uint nextIndex = pn->Children[label];
+                            if (nextIndex == 0)
+                                return false;
+
+                            currentIndex = nextIndex;
+                        }
                     }
 
-                    if (nextIndex == 0)
-                        return false;
-
-                    currentIndex = nextIndex;
                 }
 
                 ref readonly var finalNode = ref GetNodeAtIndex(currentIndex);

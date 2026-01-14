@@ -82,8 +82,10 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                     // Reverse: visit 255..0 => push ascending so stack pops descending.
                     unsafe
                     {
-                        fixed (uint* p = node.Children)
+                        fixed (MmapNode* pn = &node)
                         {
+                            uint* p = pn->Children;
+
                             if (_reverse)
                             {
                                 for (int b = 0; b <= 255; b++)
