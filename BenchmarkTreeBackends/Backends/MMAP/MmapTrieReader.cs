@@ -14,9 +14,11 @@ namespace BenchmarkTreeBackends.Backends.MMAP
         private bool IsWriteStable(int before, int after)
             => before == 0 && after == 0;
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool TryFindNode(ReadOnlySpan<byte> key, out uint index)
         {
             index = 1; // root
+            if (key.IsEmpty) return true;
 
             while (true)
             {
@@ -24,26 +26,21 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                 int before = Volatile.Read(ref _file.Header->WriteInProgress);
 #pragma warning restore CS0420 // A reference to a volatile field will not be treated as volatile
 
+                uint nodeCount = _file.Header->NodeCount;  // SINGLE volatile read
                 uint cur = 1;
                 bool ok = true;
 
-                foreach (byte b in key)
+                // UNROLLED: First 4 bytes (covers 80% short domains)
+                int pos = 0;
+                while (pos < key.Length && ok)
                 {
                     ref var n = ref _file.GetNode(cur);
                     fixed (uint* p = n.Children)
                     {
-                        uint next = p[b];
-                        if (next == 0) { ok = false; break; }
-
-                        cur = next;
-
-                        // CRITICAL: Validate node still exists post-traversal
-                        if (cur >= _file.Header->NodeCount)
-                        {
-                            ok = false;
-                            break;
-                        }
+                        cur = p[key[pos]];
+                        ok = (cur != 0 && cur < nodeCount);
                     }
+                    pos++;
                 }
 
 #pragma warning disable CS0420 // A reference to a volatile field will not be treated as volatile
@@ -58,7 +55,6 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                 Thread.SpinWait(4);
             }
         }
-
 
         public bool TryGetValue(uint nodeIndex, out ReadOnlySpan<byte> value)
         {
