@@ -90,7 +90,7 @@ namespace BenchmarkTreeBackends
         // SAME workload, different trees
         [Benchmark(Baseline = true)]
         [MethodImpl(MethodImplOptions.NoInlining)]
-        public void DefaultDomainTree()
+        public void InMemoryDomainTree()
         {
             for (int i = 0; i < N; i++)
                 _defaultTree.TryGet(TestDomains[i % TestDomains.Length], out _);
@@ -98,7 +98,7 @@ namespace BenchmarkTreeBackends
 
         [Benchmark]
         [MethodImpl(MethodImplOptions.NoInlining)]
-        public void DiskBackedDomainTree()
+        public void LmdbBackedDomainTree()
         {
             for (int i = 0; i < N; i++)
                 _dbBackedTree.TryGet(TestDomains[i % TestDomains.Length], out _);

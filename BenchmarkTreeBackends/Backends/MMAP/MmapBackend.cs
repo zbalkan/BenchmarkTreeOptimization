@@ -33,6 +33,7 @@ using System.Buffers.Binary;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
@@ -522,7 +523,7 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                 var parentNode = nodes[parentIndex];
 
                 var children = tnode.GetChildrenSorted();
-                if (children.Count == 0)
+                if (children.ToArray().Length == 0)
                 {
                     nodes[parentIndex] = parentNode;
                     continue;

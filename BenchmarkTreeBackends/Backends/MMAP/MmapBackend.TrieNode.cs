@@ -28,7 +28,6 @@
 // - Bounds checks remain enabled by default; define MMAP_UNSAFE_FAST only for trusted files.
 
 using System;
-using System.Collections.Generic;
 
 namespace BenchmarkTreeBackends.Backends.MMAP
 {
@@ -36,25 +35,43 @@ namespace BenchmarkTreeBackends.Backends.MMAP
     {
         private sealed class TrieNode
         {
-            private Dictionary<byte, TrieNode>? _children;
+            // 256-way child table (ByteTree-faithful)
+            private TrieNode?[]? _children;
 
             public byte[]? ValueBytes;
 
-            private TrieNode()
-            { }
+            private TrieNode() { }
 
             public static TrieNode CreateRoot() => new TrieNode();
 
-            public int ChildrenCount => _children?.Count ?? 0;
+            public int ChildrenCount
+            {
+                get
+                {
+                    if (_children is null)
+                        return 0;
+
+                    int count = 0;
+                    for (int i = 0; i < 256; i++)
+                    {
+                        if (_children[i] is not null)
+                            count++;
+                    }
+                    return count;
+                }
+            }
 
             public TrieNode GetOrCreateChild(byte label)
             {
-                _children ??= new Dictionary<byte, TrieNode>(capacity: 4);
-                if (!_children.TryGetValue(label, out var child))
+                _children ??= new TrieNode?[256];
+
+                var child = _children[label];
+                if (child is null)
                 {
                     child = new TrieNode();
                     _children[label] = child;
                 }
+
                 return child;
             }
 
@@ -65,27 +82,40 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                     child = null!;
                     return false;
                 }
-                return _children.TryGetValue(label, out child!);
+
+                child = _children[label]!;
+                return child is not null;
             }
 
             public void RemoveChild(byte label)
             {
-                _children?.Remove(label);
-                if (_children is { Count: 0 })
-                    _children = null;
+                if (_children is null)
+                    return;
+
+                _children[label] = null;
+
+                // Optional cleanup: release array if empty
+                for (int i = 0; i < 256; i++)
+                {
+                    if (_children[i] is not null)
+                        return;
+                }
+
+                _children = null;
             }
 
-            public List<(byte label, TrieNode node)> GetChildrenSorted()
+            public System.Collections.Generic.IEnumerable<(byte label, TrieNode node)> GetChildrenSorted()
             {
-                if (_children is null || _children.Count == 0)
-                    return new List<(byte, TrieNode)>(0);
+                if (_children is null)
+                    yield break;
 
-                var list = new List<(byte, TrieNode)>(_children.Count);
-                foreach (var kv in _children)
-                    list.Add((kv.Key, kv.Value));
-
-                list.Sort(static (a, b) => a.Item1.CompareTo(b.Item1));
-                return list;
+                // Already in ascending byte order: 0..255
+                for (byte b = 0; b < 255; b++)
+                {
+                    var c = _children[b];
+                    if (c is not null)
+                        yield return (b, c);
+                }
             }
 
             public TrieNode Clone()
@@ -99,13 +129,19 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                     n.ValueBytes = copy;
                 }
 
-                if (_children is null || _children.Count == 0)
+                if (_children is null)
                     return n;
 
-                n._children = new Dictionary<byte, TrieNode>(_children.Count);
-                foreach (var kv in _children)
-                    n._children[kv.Key] = kv.Value.Clone();
+                var newChildren = new TrieNode?[256];
 
+                for (int i = 0; i < 256; i++)
+                {
+                    var c = _children[i];
+                    if (c is not null)
+                        newChildren[i] = c.Clone();
+                }
+
+                n._children = newChildren;
                 return n;
             }
         }
