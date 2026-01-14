@@ -226,7 +226,7 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                     return false;
                 }
 
-                long abs = checked(Header.ValueRegionOffset + node.ValueOffset);
+                long abs = checked(Header.ValueRegionOffset + (node.ValueOffset - 1));
 
 #if !MMAP_UNSAFE_FAST
                 // Need at least 4 bytes for length prefix

@@ -569,7 +569,7 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                 }
                 else
                 {
-                    n.ValueOffset = valueCursor;
+                    n.ValueOffset = valueCursor + 1;
                     n.ValueLength = t.ValueBytes.Length;
                     valueCursor += 4L + t.ValueBytes.Length;
                 }
