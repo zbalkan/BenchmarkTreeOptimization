@@ -12,7 +12,7 @@ namespace BenchmarkTreeBackends.Backends.MMAP
         {
             Span<byte> buf = stackalloc byte[Marshal.SizeOf<T>()];
             T tmp = value;
-            MemoryMarshal.Write(buf, ref tmp);
+            MemoryMarshal.Write(buf, in tmp);
             bw.Write(buf);
         }
     }
