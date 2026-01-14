@@ -68,8 +68,8 @@ namespace BenchmarkTreeBackends.Backends.MMAP
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public ReadOnlySpan<byte> GetValue(long valueOffset, int valueLength)
         {
-            if (valueOffset < 0 || valueLength < 0)
-                throw new ArgumentOutOfRangeException();
+            ArgumentOutOfRangeException.ThrowIfLessThan(valueOffset, 0, nameof(valueOffset));
+            ArgumentOutOfRangeException.ThrowIfLessThan(valueLength, 0, nameof(valueLength));
 
             // Layout is: [int32 len][payload], ValueOffset points to the start of len.
             // Payload begins at +4.
