@@ -22,19 +22,23 @@ namespace BenchmarkTreeBackends.Backends.MMAP
         {
             _codec = codec;
 
-            // Vacuum the file on open
-            // Open existing file
+            var tempPath = path + ".tmp";
+            var backupPath = path + ".bak";
+
+            // 1) Recover from previous crash if needed
+            RecoverIfNeeded(path, tempPath, backupPath);
+
+            // 2) Open existing file
             var oldFile = new MmapFile(path);
 
-            // Capture layout (same capacity)
+            // 3) Capture layout (same capacity)
             uint nodeCap =
                 (uint)((oldFile.Header->ValueRegionOffset - oldFile.Header->NodeRegionOffset) / sizeof(MmapNode));
 
             long valueCap =
                 oldFile.CapacityBytes - oldFile.Header->ValueRegionOffset;
 
-            // Create temp file
-            var tempPath = path + ".tmp";
+            // 4) Create temp file
             if (File.Exists(tempPath))
                 File.Delete(tempPath);
 
@@ -42,33 +46,38 @@ namespace BenchmarkTreeBackends.Backends.MMAP
             var newWriter = new MmapTrieWriter(newFile);
             var oldReader = new MmapTrieReader(oldFile);
 
-            // Copy live entries
+            // 5) Copy live entries
             ForEachLiveEntry(oldFile, oldReader, (key, payload) =>
             {
                 newWriter.InsertOrUpdate(key, payload, overwrite: true);
             });
 
-            // Flush + close temp file
+            // 6) Flush + close temp file
             newFile.Flush();
             newFile.Dispose();
 
-            // Close old file
+            // 7) Close old file before replace
             oldFile.Dispose();
 
-            // Atomic replace
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            // 8) Atomic replace (with backup)
+            ReplaceWithBackup(path, tempPath, backupPath);
+
+            // 9) Verify new file opens correctly
+            try
             {
-                var backupPath = path + ".bak";
-                if (File.Exists(backupPath))
-                    File.Delete(backupPath);
-
-                File.Replace(tempPath, path, backupPath);
+                _file = new MmapFile(path);
             }
-            else
-                File.Move(tempPath, path, overwrite: true);
+            catch
+            {
+                // Roll back to old file if verification fails
+                Rollback(path, backupPath);
+                _file = new MmapFile(path);
+            }
 
-            // Reopen clean file
-            _file = new MmapFile(path);
+            // 10) Success → remove backup
+            if (File.Exists(backupPath))
+                File.Delete(backupPath);
+
             _reader = new MmapTrieReader(_file);
             _writer = new MmapTrieWriter(_file);
         }
@@ -155,6 +164,7 @@ namespace BenchmarkTreeBackends.Backends.MMAP
         }
 
         public abstract byte[]? ConvertToByteKey(TKey key, bool throwException = true);
+
         public void Dispose()
         {
             // Do not change this code. Put cleanup code in 'Dispose(bool disposing)' method
@@ -238,6 +248,7 @@ namespace BenchmarkTreeBackends.Backends.MMAP
             value = _codec.Decode(payload);
             return true;
         }
+
         public bool TryRemove(TKey key)
         {
             var b = ConvertToByteKey(key, false);
@@ -248,6 +259,7 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                 return _writer.TryRemove(b);
             }
         }
+
         public bool TryRemove(TKey key, out TValue? value)
         {
             var b = ConvertToByteKey(key, false);
@@ -288,6 +300,7 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                 return true;
             }
         }
+
         protected virtual void Dispose(bool disposing)
         {
             if (!_disposed)
@@ -299,11 +312,6 @@ namespace BenchmarkTreeBackends.Backends.MMAP
 
                 _disposed = true;
             }
-        }
-        private struct Frame
-        {
-            public uint Node;
-            public int Depth;
         }
 
         private static void ForEachLiveEntry(
@@ -346,6 +354,60 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                     }
                 }
             }
+        }
+
+        private static void RecoverIfNeeded(string path, string tempPath, string backupPath)
+        {
+            // If main file is missing but temp exists → promote temp
+            if (!File.Exists(path) && File.Exists(tempPath))
+            {
+                File.Move(tempPath, path);
+                return;
+            }
+
+            // If backup exists and main file is missing → restore backup
+            if (File.Exists(backupPath) && !File.Exists(path))
+            {
+                File.Move(backupPath, path);
+                return;
+            }
+
+            // Clean stray temp if main file exists
+            if (File.Exists(path) && File.Exists(tempPath))
+                File.Delete(tempPath);
+        }
+
+        private static void ReplaceWithBackup(string path, string tempPath, string backupPath)
+        {
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                if (File.Exists(backupPath))
+                    File.Delete(backupPath);
+
+                File.Replace(tempPath, path, backupPath);
+            }
+            else
+            {
+                if (File.Exists(backupPath))
+                    File.Delete(backupPath);
+
+                File.Move(path, backupPath);
+                File.Move(tempPath, path);
+            }
+        }
+
+        private static void Rollback(string path, string backupPath)
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+
+            if (File.Exists(backupPath))
+                File.Move(backupPath, path);
+        }
+        private struct Frame
+        {
+            public int Depth;
+            public uint Node;
         }
     }
 }
