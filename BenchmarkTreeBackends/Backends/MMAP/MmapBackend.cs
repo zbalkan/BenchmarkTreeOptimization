@@ -2,13 +2,14 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
-
 
 namespace BenchmarkTreeBackends.Backends.MMAP
 {
     public abstract unsafe partial class MmapBackend<TKey, TValue> : IBackend<TKey, TValue>, IDisposable
-    where TValue : class
+        where TValue : class
     {
         private readonly IValueCodec<TValue> _codec;
         private readonly MmapFile _file;
@@ -19,10 +20,57 @@ namespace BenchmarkTreeBackends.Backends.MMAP
 
         protected MmapBackend(string path, IValueCodec<TValue> codec)
         {
+            _codec = codec;
+
+            // Vacuum the file on open
+            // Open existing file
+            var oldFile = new MmapFile(path);
+
+            // Capture layout (same capacity)
+            uint nodeCap =
+                (uint)((oldFile.Header->ValueRegionOffset - oldFile.Header->NodeRegionOffset) / sizeof(MmapNode));
+
+            long valueCap =
+                oldFile.CapacityBytes - oldFile.Header->ValueRegionOffset;
+
+            // Create temp file
+            var tempPath = path + ".tmp";
+            if (File.Exists(tempPath))
+                File.Delete(tempPath);
+
+            var newFile = new MmapFile(tempPath, nodeCap, valueCap);
+            var newWriter = new MmapTrieWriter(newFile);
+            var oldReader = new MmapTrieReader(oldFile);
+
+            // Copy live entries
+            ForEachLiveEntry(oldFile, oldReader, (key, payload) =>
+            {
+                newWriter.InsertOrUpdate(key, payload, overwrite: true);
+            });
+
+            // Flush + close temp file
+            newFile.Flush();
+            newFile.Dispose();
+
+            // Close old file
+            oldFile.Dispose();
+
+            // Atomic replace
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                var backupPath = path + ".bak";
+                if (File.Exists(backupPath))
+                    File.Delete(backupPath);
+
+                File.Replace(tempPath, path, backupPath);
+            }
+            else
+                File.Move(tempPath, path, overwrite: true);
+
+            // Reopen clean file
             _file = new MmapFile(path);
             _reader = new MmapTrieReader(_file);
             _writer = new MmapTrieWriter(_file);
-            _codec = codec;
         }
 
         public bool IsEmpty => _file.Header->ValueCount == 0;
@@ -69,7 +117,6 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                     return updated;
                 }
 
-                // No existing - create new
                 var added = addValueFactory(key);
                 _writer.InsertOrUpdate(b, _codec.Encode(added), overwrite: true);
                 return added;
@@ -251,6 +298,53 @@ namespace BenchmarkTreeBackends.Backends.MMAP
                 }
 
                 _disposed = true;
+            }
+        }
+        private struct Frame
+        {
+            public uint Node;
+            public int Depth;
+        }
+
+        private static void ForEachLiveEntry(
+                    MmapFile file,
+                    MmapTrieReader reader,
+                    Action<byte[], ReadOnlySpan<byte>> visitor)
+        {
+            var path = new byte[256];
+            var stack = new Stack<Frame>(64);
+
+            stack.Push(new Frame { Node = 1, Depth = 0 });
+
+            while (stack.Count > 0)
+            {
+                var f = stack.Pop();
+                ref var n = ref file.GetNode(f.Node);
+
+                if ((n.Flags & 1u) != 0 &&
+                    reader.TryGetValue(f.Node, out var payload))
+                {
+                    var key = new byte[f.Depth];
+                    Buffer.BlockCopy(path, 0, key, 0, f.Depth);
+                    visitor(key, payload);
+                }
+
+                fixed (uint* p = n.Children)
+                {
+                    for (int i = 255; i >= 0; i--)
+                    {
+                        uint child = p[i];
+                        if (child == 0) continue;
+
+                        path[f.Depth] = (byte)i;
+
+                        stack.Push(new Frame
+                        {
+                            Node = child,
+                            Depth = f.Depth + 1
+                        });
+                    }
+                }
             }
         }
     }
