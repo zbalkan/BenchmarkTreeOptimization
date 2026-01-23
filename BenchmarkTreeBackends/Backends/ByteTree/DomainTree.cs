@@ -20,7 +20,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 using System;
 using System.Text;
 
-namespace BenchmarkTreeBackends.Backends.Memory
+namespace BenchmarkTreeBackends.Backends.ByteTree
 
 {
     public class DomainTree<T> : ByteTree<string, T> where T : class
@@ -67,7 +67,7 @@ namespace BenchmarkTreeBackends.Backends.Memory
                     _keyMap[i] = (byte)keyCode;
                     _reverseKeyMap[keyCode] = (byte)i;
                 }
-                else if ((i >= 48) && (i <= 57)) //[0-9]
+                else if (i >= 48 && i <= 57) //[0-9]
                 {
                     keyCode = i - 44; //4 - 13
                     _keyMap[i] = (byte)keyCode;
@@ -79,13 +79,13 @@ namespace BenchmarkTreeBackends.Backends.Memory
                     _keyMap[i] = (byte)keyCode;
                     _reverseKeyMap[keyCode] = (byte)i;
                 }
-                else if ((i >= 97) && (i <= 122)) //[a-z]
+                else if (i >= 97 && i <= 122) //[a-z]
                 {
                     keyCode = i - 82; //15 - 40
                     _keyMap[i] = (byte)keyCode;
                     _reverseKeyMap[keyCode] = (byte)i;
                 }
-                else if ((i >= 65) && (i <= 90)) //[A-Z]
+                else if (i >= 65 && i <= 90) //[A-Z]
                 {
                     keyCode = i - 50; //15 - 40
                     _keyMap[i] = (byte)keyCode;
@@ -173,7 +173,7 @@ namespace BenchmarkTreeBackends.Backends.Memory
                     return null;
                 }
 
-                if ((labelLength == 1) && (domain[labelStart + 1] == '*')) //[*]
+                if (labelLength == 1 && domain[labelStart + 1] == '*') //[*]
                 {
                     key[keyOffset++] = 1;
                 }

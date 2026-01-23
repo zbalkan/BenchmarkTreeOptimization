@@ -21,7 +21,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 
-namespace BenchmarkTreeBackends.Backends.Memory
+namespace BenchmarkTreeBackends.Backends.ByteTree
 {
     public abstract partial class ByteTree<TKey, TValue> : IBackend<TKey, TValue> where TValue : class
     {
@@ -36,7 +36,7 @@ namespace BenchmarkTreeBackends.Backends.Memory
 
         protected ByteTree(int keySpace)
         {
-            if ((keySpace < 0) || (keySpace > 256))
+            if (keySpace < 0 || keySpace > 256)
                 throw new ArgumentOutOfRangeException(nameof(keySpace));
 
             _keySpace = keySpace;
