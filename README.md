@@ -6,22 +6,23 @@ The same logical API (`IBackend<TKey, TValue>`) is implemented using three diffe
 
 | Backend                   | Storage Model          | Primary Goal                   | Codec                      |
 | ------------------------- | ---------------------- | ------------------------------ | -------------------------- |
+| **ConcurrentDictionary**  | In-memory dictionary   | Baseline                       | None                       |
 | **DefaultDomainTree**     | In-memory object graph | Baseline correctness           | Native UTF8 string to byte |
 | **LmdbBackedDomainTree**  | LMDB + serialization   | Persistence                    | MessagePack                |
 | **MmapBackedDomainTree**  | Memory-mapped file     | Read performance + Persistence | MessagePack                |
 | **MmapBackedDomainTree2** | Memory-mapped file     | Read performance + Persistence | Native UTF8 string to byte |
+| **DnsTrie**               | In-memory QP Trie      | DNS-optimized trie             | Internal                   |
 
 ---
 
 ## Benchmark Environment
 
 ```
-
-BenchmarkDotNet v0.15.8, Windows 11 (10.0.26200.7462/25H2/2025Update/HudsonValley2)
+BenchmarkDotNet v0.15.8, Windows 11 (10.0.26200.7840/25H2/2025Update/HudsonValley2)
 AMD Ryzen AI 5 PRO 340 w/ Radeon 840M 2.00GHz, 1 CPU, 12 logical and 6 physical cores
-.NET SDK 10.0.102
-  [Host]     : .NET 9.0.12 (9.0.12, 9.0.1225.60609), X64 RyuJIT x86-64-v4
-  DefaultJob : .NET 9.0.12 (9.0.12, 9.0.1225.60609), X64 RyuJIT x86-64-v4
+.NET SDK 9.0.311
+  [Host]     : .NET 9.0.13 (9.0.13, 9.0.1326.6317), X64 RyuJIT x86-64-v4 [AttachedDebugger]
+  DefaultJob : .NET 9.0.13 (9.0.13, 9.0.1326.6317), X64 RyuJIT x86-64-v4
 ```
 
 Workload:
@@ -31,14 +32,15 @@ Large realistic domain trees with deep hierarchies and frequent lookups.
 
 ## Benchmark Results
 
-| Method                | Mean       | Error    | StdDev    | Median     | Ratio | RatioSD | Gen0        | Allocated | Alloc Ratio |
-|---------------------- |-----------:|---------:|----------:|-----------:|------:|--------:|------------:|----------:|------------:|
-| InMemoryDomainTree    |   813.8 ms | 11.34 ms |  10.05 ms |   812.3 ms |  1.00 |    0.02 |  53000.0000 | 425.49 MB |        1.00 |
-| LmdbBackedDomainTree  | 1,300.3 ms |  9.65 ms |   8.55 ms | 1,297.0 ms |  1.60 |    0.02 | 111000.0000 | 892.05 MB |        2.10 |
-| LmdbBackedDomainTree2 | 1,087.8 ms | 18.65 ms |  17.45 ms | 1,079.6 ms |  1.34 |    0.03 |  93000.0000 | 745.33 MB |        1.75 |
-| MmapBackedDomainTree  | 1,070.4 ms | 65.33 ms | 191.59 ms |   961.9 ms |  1.32 |    0.23 |  93000.0000 | 745.33 MB |        1.75 |
-| MmapBackedDomainTree2 |   775.9 ms | 14.16 ms |  15.74 ms |   775.6 ms |  0.95 |    0.02 |  75000.0000 | 598.61 MB |        1.41 |
-
+| Method                | Mean        | Error     | StdDev     | Ratio | RatioSD | Gen0        | Allocated   | Alloc Ratio |
+|---------------------- |------------:|----------:|-----------:|------:|--------:|------------:|------------:|------------:|
+| ConcurrentDictionary  |    94.72 ms |  1.405 ms |   1.173 ms |  1.00 |    0.02 |           - |           - |          NA |
+| InMemoryDomainTree    |   846.43 ms | 61.905 ms | 177.617 ms |  8.94 |    1.87 |  53000.0000 | 446153824 B |          NA |
+| LmdbBackedDomainTree  | 1,108.85 ms | 22.112 ms |  49.911 ms | 11.71 |    0.54 | 111000.0000 | 935384968 B |          NA |
+| LmdbBackedDomainTree2 |   963.85 ms | 16.997 ms |  15.899 ms | 10.18 |    0.20 |  93000.0000 | 781538696 B |          NA |
+| MmapBackedDomainTree  | 1,081.19 ms | 20.721 ms |  19.382 ms | 11.42 |    0.24 |  93000.0000 | 781538696 B |          NA |
+| MmapBackedDomainTree2 |   879.43 ms | 13.240 ms |  11.056 ms |  9.29 |    0.16 |  75000.0000 | 627692424 B |          NA |
+| DnsTrie               |   276.18 ms |  5.333 ms |   6.348 ms |  2.92 |    0.07 |           - |           - |          NA |
 
 
 ### Key observations
@@ -47,6 +49,7 @@ Large realistic domain trees with deep hierarchies and frequent lookups.
 * MMAP achieves the **fastest lookup performance**.
 * MMAP does **not increase GC pressure** compared to the in-memory version.
 * Lookup performance is dominated by traversal, not deserialization.
+* C# version of the DNS-optimized QP trie by Tony Finch <dot@dotat.at> serems to be faster, with the optimizations to minimize allocations, etc. 
 
 ---
 
@@ -77,6 +80,15 @@ Large realistic domain trees with deep hierarchies and frequent lookups.
 * **Immutable** – all mutations use blue/green publishing
 
 This backend is optimized for **read-heavy workloads** such as DNS resolution.
+
+### 4. DnsTrie (In-Memory QP Trie)
+* In-memory implementation of a DNS-optimized QP trie
+* Uses a compact node structure with bit-packed labels
+* Minimizes allocations by using value types and spans
+* Optimized for DNS workloads with common suffixes and deep hierarchies
+* Offers a different tradeoff between memory usage and lookup speed compared to the other backends
+* Serves as a specialized implementation for DNS use cases, while the other backends are more general-purpose
+* Created based on Tony Finch's C implementation, adapted to C# with optimizations for .NET's memory model and performance characteristics
 
 ---
 
@@ -119,11 +131,13 @@ The codec is responsible for:
 
 MMAP never allocates new arrays during reads; decoding happens directly from mapped memory.
 
+P.S: The `DnsTrie` backend uses an internal encoding optimized for DNS labels, so it does not rely on the `IValueCodec` interface.
+
 ---
 
 ## Functional Parity
 
-All backends implement:
+All backends implement -except `ConcurrentDictionary` and `DnsTrie`:
 
 ```csharp
 IBackend<TKey, TValue>
@@ -164,8 +178,10 @@ Future work:
 
 ## Summary
 
-As expected, in-memory data is the winner. Our custom memory-mapped file-backed binary ByteTree has shown similar performance to LMDB. The serizalization and memory allocations were the bottlenecks for resource usage. 
+As expected, in-memory data is the winner. Our custom memory-mapped file-backed binary ByteTree has shown similar performance to LMDB. The serizalization and memory allocations were the bottlenecks for resource usage.
+
+The DNS-optimized QP trie shows promising performance, but further optimizations and comparisons are needed to fully understand its tradeoffs.
 
 ---
 
-P.S: This README is generated by AI based on BenchmarkDotnet reports and source code.
+P.S: The initial version of this README is generated by AI based on BenchmarkDotnet reports and source code.

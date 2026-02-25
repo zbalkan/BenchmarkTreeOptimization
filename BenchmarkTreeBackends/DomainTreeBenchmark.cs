@@ -3,7 +3,9 @@ using BenchmarkTreeBackends.Backends;
 using BenchmarkTreeBackends.Backends.ByteTree;
 using BenchmarkTreeBackends.Backends.LMDB;
 using BenchmarkTreeBackends.Backends.MMAP;
+using BenchmarkTreeBackends.Backends.QP;
 using BenchmarkTreeBackends.Codecs;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Runtime.CompilerServices;
 
@@ -12,11 +14,13 @@ namespace BenchmarkTreeBackends
     [MemoryDiagnoser]
     public class DomainTreeBenchmark
     {
+        private ConcurrentDictionary<string, string> _concurrentDict;
         private DomainTree<string> _defaultTree;
         private DatabaseBackedDomainTree<string> _dbBackedTree;
         private DatabaseBackedDomainTree<string> _dbBackedTree2;
         private MmapBackedDomainTree<string> _mmapBackedTree;
         private MmapBackedDomainTree<string> _mmapBackedTree2;
+        private DnsTrie<string> _dnsTrie;
 
         private const int N = 10_000_000;
 
@@ -45,17 +49,21 @@ namespace BenchmarkTreeBackends
         [GlobalSetup]
         public void Setup()
         {
+            _concurrentDict = new ConcurrentDictionary<string, string>();
             _defaultTree = new DomainTree<string>();
             _dbBackedTree = new DatabaseBackedDomainTree<string>("treetest", new MessagePackCodec<string>());
             _dbBackedTree2 = new DatabaseBackedDomainTree<string>("treetest2", new Utf8StringCodec());
             _mmapBackedTree = new MmapBackedDomainTree<string>("treetest_mmap", new MessagePackCodec<string>());
             _mmapBackedTree2 = new MmapBackedDomainTree<string>("treetest_mmap2", new Utf8StringCodec());
+            _dnsTrie = new DnsTrie<string>();
 
+            SeedDict(_concurrentDict);
             Seed(_defaultTree);
             Seed(_dbBackedTree);
             Seed(_dbBackedTree2);
             Seed(_mmapBackedTree);
             Seed(_mmapBackedTree2);
+            SeedTrie(_dnsTrie);
         }
 
         [GlobalCleanup]
@@ -92,8 +100,60 @@ namespace BenchmarkTreeBackends
             _ = tree.TryAdd(deep, "deep");
         }
 
+        private static void SeedDict(ConcurrentDictionary<string, string> tree)
+        {
+            _ = tree.TryAdd("com", "com-root");
+            _ = tree.TryAdd("org", "org-root");
+
+            var subs = new[] { "google", "microsoft", "github", "example" };
+            foreach (var sub in subs)
+            {
+                _ = tree.TryAdd($"{sub}.com", sub);
+                _ = tree.TryAdd($"www.{sub}.com", sub);
+                _ = tree.TryAdd($"api.{sub}.com", sub);
+                _ = tree.TryAdd($"mail.{sub}.com", sub);
+            }
+
+            var deep = "a";
+            for (int i = 0; i < 25; i++)
+                deep = $"{deep}.a";
+            deep += ".com";
+
+            _ = tree.TryAdd(deep, "deep");
+        }
+
+        private static void SeedTrie(DnsTrie<string> trie)
+        {
+            _ = trie.Set("com", "com-root");
+            _ = trie.Set("org", "org-root");
+
+            var subs = new[] { "google", "microsoft", "github", "example" };
+            foreach (var sub in subs)
+            {
+                _ = trie.Set($"{sub}.com", sub);
+                _ = trie.Set($"www.{sub}.com", sub);
+                _ = trie.Set($"api.{sub}.com", sub);
+                _ = trie.Set($"mail.{sub}.com", sub);
+            }
+
+            var deep = "a";
+            for (int i = 0; i < 25; i++)
+                deep = $"{deep}.a";
+            deep += ".com";
+
+            _ = trie.Set(deep, "deep");
+        }
+
         // SAME workload, different trees
         [Benchmark(Baseline = true)]
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        public void ConcurrentDictionary()
+        {
+            for (int i = 0; i < N; i++)
+                _concurrentDict.TryGetValue(TestDomains[i % TestDomains.Length], out _);
+        }
+
+        [Benchmark]
         [MethodImpl(MethodImplOptions.NoInlining)]
         public void InMemoryDomainTree()
         {
@@ -134,5 +194,12 @@ namespace BenchmarkTreeBackends
                 _mmapBackedTree2.TryGet(TestDomains[i % TestDomains.Length], out _);
         }
 
+        [Benchmark]
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        public void DnsTrie()
+        {
+            for (int i = 0; i < N; i++)
+                _dnsTrie.TryGet(TestDomains[i % TestDomains.Length], out _);
+        }
     }
 }
