@@ -1,6 +1,7 @@
 ﻿using BenchmarkDotNet.Attributes;
 using BenchmarkTreeBackends.Backends;
 using BenchmarkTreeBackends.Backends.ByteTree;
+using BenchmarkTreeBackends.Backends.Graph;
 using BenchmarkTreeBackends.Backends.LMDB;
 using BenchmarkTreeBackends.Backends.MMAP;
 using BenchmarkTreeBackends.Codecs;
@@ -17,6 +18,7 @@ namespace BenchmarkTreeBackends
         private DatabaseBackedDomainTree<string> _dbBackedTree2;
         private MmapBackedDomainTree<string> _mmapBackedTree;
         private MmapBackedDomainTree<string> _mmapBackedTree2;
+        private DomainGraph<string> _graph;
 
         private const int N = 10_000_000;
 
@@ -50,12 +52,14 @@ namespace BenchmarkTreeBackends
             _dbBackedTree2 = new DatabaseBackedDomainTree<string>("treetest2", new Utf8StringCodec());
             _mmapBackedTree = new MmapBackedDomainTree<string>("treetest_mmap", new MessagePackCodec<string>());
             _mmapBackedTree2 = new MmapBackedDomainTree<string>("treetest_mmap2", new Utf8StringCodec());
+            _graph = new DomainGraph<string>();
 
             Seed(_defaultTree);
             Seed(_dbBackedTree);
             Seed(_dbBackedTree2);
             Seed(_mmapBackedTree);
             Seed(_mmapBackedTree2);
+            Seed(_graph);
         }
 
         [GlobalCleanup]
@@ -134,5 +138,12 @@ namespace BenchmarkTreeBackends
                 _mmapBackedTree2.TryGet(TestDomains[i % TestDomains.Length], out _);
         }
 
+        [Benchmark]
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        public void DomainGraph()
+        {
+            for (int i = 0; i < N; i++)
+                _graph.TryGet(TestDomains[i % TestDomains.Length], out _);
+        }
     }
 }
