@@ -1,7 +1,5 @@
 ﻿// DnsTrie.cs — Lock-Free DNS QP-Trie for .NET 9 / C# 13
 // Original algorithm: Tony Finch <dot@dotat.at> (CC0 Public Domain)
-// See README.md for usage. See ARCHITECTURE.md for design rationale,
-// data structures, algorithms, complexity, and change history.
 
 using System;
 using System.Buffers;
@@ -18,26 +16,6 @@ using System.Threading;
 
 namespace BenchmarkTreeBackends.Backends.QP
 {
-    //  Public types
-    /// <summary>
-    /// Diagnostic statistics returned by <see cref="DnsTrie{TValue}.GetStats"/>.
-    /// </summary>
-    public readonly struct TrieStats(int nodeCount, int leafCount, int maxDepth)
-    {
-        /// <summary>Total number of trie nodes (branch + leaf).</summary>
-        public int NodeCount { get; } = nodeCount;
-
-        /// <summary>Number of leaf nodes (= number of stored entries).</summary>
-        public int LeafCount { get; } = leafCount;
-
-        /// <summary>Maximum depth from root to any leaf.</summary>
-        public int MaxDepth { get; } = maxDepth;
-
-        /// <inheritdoc/>
-        public override string ToString() =>
-            $"Nodes={NodeCount}, Leaves={LeafCount}, MaxDepth={MaxDepth}";
-    }
-
     /// <summary>
     /// Read-only view of a <see cref="DnsTrie{TValue}"/>.
     /// Exposes lookup, cursor-based ordered iteration, and cardinality.
@@ -53,6 +31,17 @@ namespace BenchmarkTreeBackends.Backends.QP
         /// </summary>
         int Count { get; }
 
+        /// <summary>Returns <see langword="true"/> if <paramref name="name"/> is present.</summary>
+        bool ContainsKey(string name);
+
+        /// <summary>Returns diagnostic node, leaf, and depth statistics.</summary>
+        TrieStats GetStats();
+
+        /// <summary>
+        /// Returns the value for <paramref name="name"/>, or <c>default</c> when absent.
+        /// </summary>
+        TValue? GetValueOrDefault(string name);
+
         /// <summary>Retrieves the value associated with <paramref name="name"/>.</summary>
         bool TryGet(string name, out TValue value);
 
@@ -62,21 +51,30 @@ namespace BenchmarkTreeBackends.Backends.QP
         /// </summary>
         bool TryGet(ReadOnlySpan<byte> wireName, out TValue value);
 
-        /// <summary>Returns <see langword="true"/> if <paramref name="name"/> is present.</summary>
-        bool ContainsKey(string name);
-
-        /// <summary>
-        /// Returns the value for <paramref name="name"/>, or <c>default</c> when absent.
-        /// </summary>
-        TValue? GetValueOrDefault(string name);
-
         /// <summary>
         /// Advances an in-order cursor.  Pass <see langword="null"/> for the first entry.
         /// </summary>
         bool TryGetNext(string? currentName, out string nextName, out TValue nextValue);
+    }
 
-        /// <summary>Returns diagnostic node, leaf, and depth statistics.</summary>
-        TrieStats GetStats();
+    //  Public types
+    /// <summary>
+    /// Diagnostic statistics returned by <see cref="DnsTrie{TValue}.GetStats"/>.
+    /// </summary>
+    public readonly struct TrieStats(int nodeCount, int leafCount, int maxDepth)
+    {
+        /// <summary>Number of leaf nodes (= number of stored entries).</summary>
+        public int LeafCount { get; } = leafCount;
+
+        /// <summary>Maximum depth from root to any leaf.</summary>
+        public int MaxDepth { get; } = maxDepth;
+
+        /// <summary>Total number of trie nodes (branch + leaf).</summary>
+        public int NodeCount { get; } = nodeCount;
+
+        /// <inheritdoc/>
+        public override string ToString() =>
+            $"Nodes={NodeCount}, Leaves={LeafCount}, MaxDepth={MaxDepth}";
     }
 
     /// <summary>
@@ -91,39 +89,65 @@ namespace BenchmarkTreeBackends.Backends.QP
     public sealed class DnsTrie<TValue>
         : IReadOnlyDnsTrie<TValue>, IEnumerable<KeyValuePair<string, TValue>>
     {
-        // Bitmap bit-position constants. Bits 0–1 reserved; excluded from PopCount via BitmapMask.
-        // See ARCHITECTURE.md §3 for the full 64-bit word layout.
-        private const byte BNobyte = 2;   // label-separator / end-of-key sentinel
-        private const byte BBlock0 = 3;   // split block: control chars 0x00–0x1F
-        private const byte BBlockA1 = 4;   // split block: 0x20–0x2C
-        private const byte BHyphen = 5;   // '-' — direct single-bit
-        private const byte BDot = 6;   // '.' — direct single-bit
-        private const byte BSlash = 7;   // '/' — direct single-bit
-        private const byte BDigit = 8;   // digits 0–9 → bits 8–17 (10 bits)
-        private const byte BBlockC1 = 18;  // split block: 0x3A–0x3F  (:;<=>?)
-        private const byte BBlock2 = 19;  // split block: 0x40 + 0x5B–0x5E ([\]^)
-        private const byte BUnder = 20;  // '_' — direct single-bit
-        private const byte BBackq = 21;  // '`' — direct single-bit
-        private const byte BLetter = 22;  // letters a–z → bits 22–47 (26 bits)
-        private const byte BBlock3 = 48;  // split block: 0x7B–0x7F ({|}~ DEL)
-        private const byte BBlock4 = 49;  // split block: 0x80–0x9F
-        private const byte BBlock5 = 50;  // split block: 0xA0–0xBF
-        private const byte BBlock6 = 51;  // split block: 0xC0–0xDF
-        private const byte BBlock7 = 52;  // split block: 0xE0–0xFF
+        #region variables
+
+        private const byte BBackq = 21;
+
+        private const byte BBlock0 = 3;
+
+        private const byte BBlock2 = 19;
+
+        private const byte BBlock3 = 48;
+
+        // split block: 0x7B–0x7F ({|}~ DEL)
+        private const byte BBlock4 = 49;
+
+        // split block: 0x80–0x9F
+        private const byte BBlock5 = 50;
+
+        // split block: 0xA0–0xBF
+        private const byte BBlock6 = 51;
+
+        // split block: 0xC0–0xDF
+        private const byte BBlock7 = 52;
+
+        // split block: control chars 0x00–0x1F
+        private const byte BBlockA1 = 4;
+
+        private const byte BBlockC1 = 18;
+
+        private const byte BDigit = 8;
+
+        private const byte BDot = 6;
+
+        // split block: 0x20–0x2C
+        private const byte BHyphen = 5;
+
+        // Bits 2–52 (51 bits). Excludes key-offset field (53+) and reserved bits 0–1.
+        private const ulong BitmapMask = (1UL << 53) - 1 & ~3UL;
+
+        // '`' — direct single-bit
+        private const byte BLetter = 22;
 
         // Lower-half base for split bytes: BLower + (byte % 32). BLower+32 < 53 keeps
         // the range within BitmapMask and below the key-offset field at bit 53.
         private const byte BLower = BBlock0;
 
-        // Bits 2–52 (51 bits). Excludes key-offset field (53+) and reserved bits 0–1.
-        private const ulong BitmapMask = (1UL << 53) - 1 & ~3UL;
+        // Bitmap bit-position constants. Bits 0–1 reserved; excluded from PopCount via BitmapMask.
+        // See ARCHITECTURE.md §3 for the full 64-bit word layout.
+        private const byte BNobyte = 2;   // label-separator / end-of-key sentinel
 
-        // Bytes whose source value maps to one of these bits require a second key byte
-        // encoding the low 5 bits (3+5 split scheme). See ARCHITECTURE.md §3.1.
-        private const ulong SplitMask =
-            1UL << BBlock0 | 1UL << BBlockA1 | 1UL << BBlockC1 |
-            1UL << BBlock2 | 1UL << BBlock3 | 1UL << BBlock4 |
-            1UL << BBlock5 | 1UL << BBlock6 | 1UL << BBlock7;
+        // '-' — direct single-bit
+        // '.' — direct single-bit
+        private const byte BSlash = 7;   // '/' — direct single-bit
+
+        // digits 0–9 → bits 8–17 (10 bits)
+        // split block: 0x3A–0x3F  (:;<=>?)
+        // split block: 0x40 + 0x5B–0x5E ([\]^)
+        private const byte BUnder = 20;  // '_' — direct single-bit
+
+        // Params BuildBulk: ≤ this many items use direct Set() rather than sort+build.
+        private const int DirectInsertThreshold = 16;
 
         // Worst case: 255 bytes × 2 (all split) + 2 terminators = 512; +2 for safe terminator write.
         private const int KeyCapacity = 514;
@@ -131,11 +155,491 @@ namespace BenchmarkTreeBackends.Backends.QP
         // RFC 1035 §2.3.4: max 127 non-root labels.
         private const int MaxLabelCount = 127;
 
-        // Params BuildBulk: ≤ this many items use direct Set() rather than sort+build.
-        private const int DirectInsertThreshold = 16;
+        // letters a–z → bits 22–47 (26 bits)
+        // split block: 0xE0–0xFF
+        // Bytes whose source value maps to one of these bits require a second key byte
+        // encoding the low 5 bits (3+5 split scheme). See ARCHITECTURE.md §3.1.
+        private const ulong SplitMask =
+            1UL << BBlock0 | 1UL << BBlockA1 | 1UL << BBlockC1 |
+            1UL << BBlock2 | 1UL << BBlock3 | 1UL << BBlock4 |
+            1UL << BBlock5 | 1UL << BBlock6 | 1UL << BBlock7;
 
+        private static readonly SearchValues<char> s_backslash = SearchValues.Create("\\");
         private static readonly byte[] s_insensitiveByteToBit = BuildTable(caseInsensitive: true);
         private static readonly byte[] s_sensitiveByteToBit = BuildTable(caseInsensitive: false);
+        private readonly bool _caseSensitive;
+
+        private readonly byte[] _table;
+
+        // s_insensitiveByteToBit or s_sensitiveByteToBit
+        private readonly bool _wire;
+
+        private int _count;
+
+        private volatile TrieNode? _root;
+
+        #endregion variables
+
+        #region constructor
+
+        /// <param name="caseSensitive">
+        ///   When <see langword="false"/> (default), upper- and lower-case ASCII
+        ///   letters map to the same trie bit — RFC 4343 correct for DNS.
+        /// </param>
+        /// <param name="wireFormat">
+        ///   When <see langword="true"/>, the string-key API encodes labels
+        ///   right-to-left (TLD first) so iteration order matches RFC 4034 canonical
+        ///   DNS ordering.  Wire-byte overloads always use TLD-first encoding.
+        /// </param>
+        public DnsTrie(bool caseSensitive = false, bool wireFormat = false)
+        {
+            _caseSensitive = caseSensitive;
+            _table = caseSensitive ? s_sensitiveByteToBit : s_insensitiveByteToBit;
+            _wire = wireFormat;
+        }
+
+        #endregion constructor
+
+        #region public
+
+        /// <summary>
+        /// Approximate entry count.  Exact when no concurrent writes are in progress;
+        /// may transiently lag by ±1 under concurrent modification.
+        /// <b>Do not use for coordination logic.</b>
+        /// </summary>
+        public int Count => Volatile.Read(ref _count);
+
+        /// <summary>
+        /// Constructs a fully optimised trie from a data source in
+        /// <b>O(n log n + n·k)</b>.  Duplicate keys use last-entry-wins semantics.
+        /// </summary>
+        [SkipLocalsInit]
+        public static DnsTrie<TValue> BuildBulk(
+            IEnumerable<(string Name, TValue Value)> items,
+            bool caseSensitive = false,
+            bool wireFormat = false)
+        {
+            ArgumentNullException.ThrowIfNull(items);
+
+            var trie = new DnsTrie<TValue>(caseSensitive, wireFormat);
+            var list = new List<BulkEntry>(capacity: 1024);
+
+            // Hoisted above the loop; the buffer is fully overwritten before AllocKey reads it.
+            // frame slot is reused on every iteration rather than growing the stack
+            // by KeyCapacity bytes per entry.  The buffer is fully overwritten by
+            // Encode* before AllocKey reads keyBuf[..len], so there is no
+            // stale-data hazard.
+            Span<byte> keyBuf = stackalloc byte[KeyCapacity];
+
+            foreach (var (name, value) in items)
+            {
+                if (name is null) throw new ArgumentException("Item name must not be null.", nameof(items));
+
+                ReadOnlySpan<char> normalised = NormaliseName(name.AsSpan());
+
+                int len = wireFormat
+                    ? trie.EncodeWire(normalised, keyBuf)
+                    : trie.EncodeText(normalised, keyBuf);
+
+                list.Add(new BulkEntry(normalised.ToString(), AllocKey(keyBuf[..len]), value));
+            }
+
+            if (list.Count == 0) return trie;
+
+            list.Sort(static (a, b) =>
+                a.EncodedKey.AsSpan().SequenceCompareTo(b.EncodedKey.AsSpan()));
+
+            //  O(n) deduplication — single forward pass.
+            // Sorted order guarantees duplicates are adjacent; we keep the last
+            // entry for each key (last-wins, consistent with Set() semantics).
+            int w = 0;
+            for (int i = 0; i < list.Count; i++)
+            {
+                // If the next entry has the same encoded key, skip this one (next wins).
+                if (i + 1 < list.Count &&
+                    list[i].EncodedKey.AsSpan().SequenceEqual(list[i + 1].EncodedKey.AsSpan()))
+                    continue;
+                list[w++] = list[i];
+            }
+            if (w < list.Count)
+                list.RemoveRange(w, list.Count - w);
+
+            TrieNode builtRoot = BuildFromSorted(list, 0, list.Count, depth: 0);
+
+            // volatile (release) write.  Passing a volatile field by ref to
+            // Volatile.Write strips that guarantee and triggers CS0420.
+            trie._root = builtRoot;
+            Volatile.Write(ref trie._count, list.Count);
+            return trie;
+        }
+
+        /// <summary>
+        /// Inline overload using <c>params ReadOnlySpan</c> (C# 13 / .NET 9).
+        /// For ≤ <c>16</c> items the compiler stack-allocates the tuple array and
+        /// this overload inserts directly, with zero heap allocation at the call site.
+        /// For larger sets the sorted bulk path is used.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// The <c>params</c> parameter must be last (CS0231).  Pass <paramref name="caseSensitive"/>
+        /// and <paramref name="wireFormat"/> as named arguments when non-default values are needed:
+        /// </para>
+        /// </remarks>
+        /// <example>
+        /// <code>
+        /// // Default options — positional params, no named arguments needed:
+        /// var trie = DnsTrie&lt;string&gt;.BuildBulk(
+        ///     ("example.com",     "v4"),
+        ///     ("ns1.example.com", "ns"));
+        ///
+        /// // Non-default options — pass them as named arguments before the tuples:
+        /// var zone = DnsTrie&lt;string&gt;.BuildBulk(
+        ///     caseSensitive: false, wireFormat: true,
+        ///     ("example.com", "v4"), ("ns1.example.com", "ns"));
+        /// </code>
+        /// </example>
+        public static DnsTrie<TValue> BuildBulk(
+            bool caseSensitive = false,
+            bool wireFormat = false,
+            params ReadOnlySpan<(string Name, TValue Value)> items)
+        {
+            //  for small item counts, direct Set() is cheaper than
+            // sort + bulk-build and preserves zero call-site heap allocation.
+            if (items.Length <= DirectInsertThreshold)
+            {
+                var trie = new DnsTrie<TValue>(caseSensitive, wireFormat);
+                foreach (var (name, value) in items)
+                {
+                    if (name is null) throw new ArgumentException("Item name must not be null.", nameof(items));
+                    trie.Set(name, value);
+                }
+                return trie;
+            }
+
+            // For larger sets, fall through to the sorted bulk path.
+            // The span must be materialised before calling the IEnumerable overload
+            // because the span is only valid for this call frame.
+            var list = new List<(string, TValue)>(items.Length);
+            foreach (var item in items) list.Add(item);
+            return BuildBulk((IEnumerable<(string, TValue)>)list, caseSensitive, wireFormat);
+        }
+
+        /// <summary>
+        /// Returns <see langword="true"/> if <paramref name="name"/> is present in the trie.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool ContainsKey(string name) => TryGet(name, out _);
+
+        /// <summary>
+        /// Removes the entry keyed by <paramref name="name"/> and returns the stored
+        /// key and value.
+        /// </summary>
+        /// <returns><see langword="true"/> if found and removed.</returns>
+        /// <remarks>
+        /// <para>Three single-CAS cases:</para>
+        /// <list type="number">
+        ///   <item>Root is the lone leaf → CAS root to null.</item>
+        ///   <item>Parent has 2 children → CAS grandparent to bypass parent (collapse).</item>
+        ///   <item>Parent has 3+ children → CAS parent to shrunk BranchState.</item>
+        /// </list>
+        /// </remarks>
+        [SkipLocalsInit]
+        public bool Delete(string name, out string foundKey, out TValue foundValue)
+        {
+            Span<byte> key = stackalloc byte[KeyCapacity];
+            int len = Encode(name, key);
+            return DeleteCore(key[..len], key, len, out foundKey, out foundValue);
+        }
+
+        /// <summary>
+        /// Removes the entry keyed by <paramref name="name"/>.
+        /// </summary>
+        /// <returns><see langword="true"/> if the key was found and removed.</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool Delete(string name) => Delete(name, out _, out _);
+
+        /// <summary>
+        /// Removes the entry identified by the RFC 1035 wire-format name
+        /// <paramref name="wireName"/>.
+        /// </summary>
+        [SkipLocalsInit]
+        public bool DeleteWire(ReadOnlySpan<byte> wireName, out string foundKey, out TValue foundValue)
+        {
+            Span<byte> key = stackalloc byte[KeyCapacity];
+            int len = EncodeWireRaw(wireName, key);
+            return DeleteCore(key[..len], key, len, out foundKey, out foundValue);
+        }
+
+        /// <inheritdoc/>
+        public IEnumerator<KeyValuePair<string, TValue>> GetEnumerator()
+        {
+            string? cursor = null;
+            while (TryGetNext(cursor, out string name, out TValue val))
+            {
+                yield return new KeyValuePair<string, TValue>(name, val);
+                cursor = name;
+            }
+        }
+
+        /// <inheritdoc/>
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+        /// <summary>
+        /// Returns diagnostic node, leaf, and depth counts for the current snapshot.
+        /// Iterative BFS; snapshot semantics apply.
+        /// </summary>
+        public TrieStats GetStats()
+        {
+            TrieNode? root = _root;
+            if (root is null) return new TrieStats(0, 0, 0);
+
+            var stack = new Stack<(TrieNode Node, int Depth)>(64);
+            stack.Push((root, 0));
+            int nodes = 0, leaves = 0, maxDepth = 0;
+
+            while (stack.Count > 0)
+            {
+                var (cur, depth) = stack.Pop();
+                nodes++;
+                if (depth > maxDepth) maxDepth = depth;
+
+                if (cur is LeafNode) { leaves++; continue; }
+
+                BranchState state = ((BranchNode)cur)._state;
+                foreach (TrieNode child in state.Twigs)
+                    stack.Push((child, depth + 1));
+            }
+
+            return new TrieStats(nodes, leaves, maxDepth);
+        }
+
+        /// <summary>
+        /// Returns the value associated with <paramref name="name"/>,
+        /// or <c>default</c> when the key is absent.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public TValue? GetValueOrDefault(string name) =>
+            TryGet(name, out TValue v) ? v : default;
+
+        /// <summary>
+        /// Inserts or updates <paramref name="name"/> → <paramref name="value"/>.
+        /// </summary>
+        /// <returns>
+        ///   <see langword="true"/> if the key was newly inserted;
+        ///   <see langword="false"/> if an existing entry was updated.
+        /// </returns>
+        [SkipLocalsInit]
+        public bool Set(string name, TValue value)
+        {
+            Span<byte> newKey = stackalloc byte[KeyCapacity];
+            int newLen = Encode(name.AsSpan(), newKey);
+            return SetCoreImpl(newKey, newLen, storedKey: name, value);
+        }
+
+        /// <summary>
+        /// Inserts or updates the entry identified by the RFC 1035 wire-format name
+        /// <paramref name="wireName"/>.
+        /// </summary>
+        /// <returns>
+        ///   <see langword="true"/> if the key was newly inserted;
+        ///   <see langword="false"/> if an existing entry was updated.
+        /// </returns>
+        [SkipLocalsInit]
+        public bool SetWire(ReadOnlySpan<byte> wireName, TValue value)
+        {
+            string canonical = CanonicaliseWireName(wireName);
+            Span<byte> newKey = stackalloc byte[KeyCapacity];
+            int newLen = EncodeWireRaw(wireName, newKey);
+            return SetCoreImpl(newKey, newLen, storedKey: canonical, value);
+        }
+
+        /// <summary>
+        /// Retrieves the value associated with <paramref name="name"/>.
+        /// </summary>
+        [SkipLocalsInit]
+        public bool TryGet(string name, out TValue value)
+        {
+            TrieNode? n = _root;
+            if (n is null) { value = default!; return false; }
+
+            Span<byte> key = stackalloc byte[KeyCapacity];
+            int len = Encode(name, key);
+            ReadOnlySpan<byte> keySpan = key[..len];
+
+            while (n is BranchNode branch)
+            {
+                BranchState state = branch._state;
+                byte bit = KeyBit(key, len, branch.KeyOffset);
+                if (!HasTwig(state, bit)) { value = default!; return false; }
+                n = state.Twigs[TwigOffset(state, bit)];
+            }
+
+            var leaf = (LeafNode)n;
+            if (!KeysEqual(leaf.EncodedKey, keySpan)) { value = default!; return false; }
+            value = leaf.Value;
+            return true;
+        }
+
+        /// <summary>
+        /// Retrieves the value for the RFC 1035 wire-format name
+        /// <paramref name="wireName"/> (e.g. <c>\x03www\x07example\x03com\x00</c>).
+        /// </summary>
+        [SkipLocalsInit]
+        public bool TryGet(ReadOnlySpan<byte> wireName, out TValue value)
+        {
+            TrieNode? n = _root;
+            if (n is null) { value = default!; return false; }
+
+            Span<byte> key = stackalloc byte[KeyCapacity];
+            int len = EncodeWireRaw(wireName, key);
+            ReadOnlySpan<byte> keySpan = key[..len];
+
+            while (n is BranchNode branch)
+            {
+                BranchState state = branch._state;
+                byte bit = KeyBit(key, len, branch.KeyOffset);
+                if (!HasTwig(state, bit)) { value = default!; return false; }
+                n = state.Twigs[TwigOffset(state, bit)];
+            }
+
+            var leaf = (LeafNode)n;
+            if (!KeysEqual(leaf.EncodedKey, keySpan)) { value = default!; return false; }
+            value = leaf.Value;
+            return true;
+        }
+
+        /// <summary>
+        /// Advances an in-order cursor to the lexicographically next entry.
+        /// Pass <see langword="null"/> to return the first entry.
+        /// </summary>
+        /// <remarks>
+        /// The cursor is a plain <c>string</c>; no iterator object is allocated.
+        /// Snapshot semantics: a concurrent delete may cause a removed key to appear once.
+        /// </remarks>
+        [SkipLocalsInit]
+        public bool TryGetNext(string? currentName, out string nextName, out TValue nextValue)
+        {
+            TrieNode? root = _root;
+            if (root is null) { nextName = default!; nextValue = default!; return false; }
+
+            Span<byte> queryKey = stackalloc byte[KeyCapacity];
+            int queryLen;
+            if (currentName is null)
+            {
+                // diffOff=0 causes Pass 2 to break immediately; leftmost-leaf walk then returns the first entry.
+                queryLen = 0;
+                queryKey[0] = BNobyte;
+            }
+            else
+            {
+                queryLen = Encode(currentName, queryKey);
+            }
+
+            // Pass 1: NearTwig descent to a nearby leaf:
+            TrieNode n = root;
+            while (n is BranchNode b)
+            {
+                BranchState st = b._state;
+                n = st.Twigs[NearTwig(st, KeyBit(queryKey, queryLen, b.KeyOffset))];
+            }
+
+            //  use nearLeaf.EncodedKey directly (already encoded); no re-encode.
+            // The diffOff computation mirrors the C original's loop:
+            //   for(off = 0; off <= newl; off++) — tests up to and including the
+            //   BNobyte terminator at index queryLen.
+            // We replicate this by slicing queryLen+1 bytes from queryKey and up to
+            // queryLen+1 bytes from nearKey (the virtual terminator beyond nearKey.Length
+            // is BNobyte; when nearKey is shorter we pass it as-is and CommonPrefixLength
+            // reports the mismatch at nearKey.Length, which is ≤ queryLen).
+            var nearLeaf = (LeafNode)n;
+            ReadOnlySpan<byte> nearKey = nearLeaf.EncodedKey;
+            int diffOff = queryKey[..Math.Min(queryLen + 1, KeyCapacity)].CommonPrefixLength(
+                              nearKey.Length > queryLen
+                                  ? nearKey[..(queryLen + 1)]
+                                  : nearKey);
+            // Clamp: the C loop runs to off == newl (queryLen) at most.
+            if (diffOff > queryLen) diffOff = queryLen;
+
+            // Pass 2: walk the query path and record the deepest right-sibling subtree.
+            // next = root for null currentName (first-entry); null otherwise.
+            TrieNode? next = currentName is null ? root : null;
+            n = root;
+
+            while (n is BranchNode branch)
+            {
+                if (branch.KeyOffset >= diffOff) break;
+
+                BranchState state = branch._state;
+                byte bit = KeyBit(queryKey, queryLen, branch.KeyOffset);
+                if (!HasTwig(state, bit)) break;
+
+                int s = TwigOffset(state, bit);
+                int m = TwigCount(state) - 1;
+                if (s < m) next = state.Twigs[s + 1]; // right sibling subtree
+                n = state.Twigs[s];
+            }
+
+            // Walk next down to its leftmost leaf.
+            while (next is BranchNode nb)
+            {
+                BranchState st = nb._state;
+                next = st.Twigs[0];
+            }
+
+            if (next is LeafNode result)
+            {
+                nextName = result.Key;
+                nextValue = result.Value;
+                return true;
+            }
+
+            nextName = default!;
+            nextValue = default!;
+            return false;
+        }
+
+        #endregion public
+
+        #region private
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static byte[] AllocKey(ReadOnlySpan<byte> src)
+        {
+            byte[] arr = GC.AllocateUninitializedArray<byte>(src.Length);
+            src.CopyTo(arr);
+            return arr;
+        }
+
+        // true → string API encodes labels TLD-first
+        // stored for SIMD encoding path
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static ulong BitsBelow(int bit) => (1UL << bit) - 1 & BitmapMask;
+
+        private static TrieNode BuildFromSorted(List<BulkEntry> list, int start, int end, int depth)
+        {
+            if (end - start == 1)
+            {
+                var x = list[start];
+                return new LeafNode(x.Name, x.EncodedKey, x.Value);
+            }
+
+            int splitOff = FindSplitOffset(list, start, end, depth);
+            ulong bitmap = 0;
+            var children = new List<TrieNode>(capacity: 8);
+
+            int i = start;
+            while (i < end)
+            {
+                byte bit = BulkKeyByte(list[i].EncodedKey, splitOff);
+                int j = i + 1;
+                while (j < end && BulkKeyByte(list[j].EncodedKey, splitOff) == bit) j++;
+                bitmap |= 1UL << bit;
+                children.Add(BuildFromSorted(list, i, j, splitOff + 1));
+                i = j;
+            }
+
+            return new BranchNode(splitOff, new BranchState(bitmap, children.ToArray()));
+        }
 
         private static byte[] BuildTable(bool caseInsensitive)
         {
@@ -171,146 +675,75 @@ namespace BenchmarkTreeBackends.Backends.QP
             return t;
         }
 
-        private static readonly SearchValues<char> s_backslash = SearchValues.Create("\\");
-
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static bool KeysEqual(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b)
-            => a.SequenceEqual(b);
+        private static byte BulkKeyByte(byte[] key, int off) =>
+            (uint)off < (uint)key.Length ? key[off] : BNobyte;
 
-        // Returns index of first differing byte, or -1 when spans are identical.
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int FirstDiffOffset(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b)
+        // Convert RFC 1035 wire bytes to canonical presentation string.
+        // Case-folds to lower-case; joins labels with '.'.  Root zone → ".".
+        private static string CanonicaliseWireName(ReadOnlySpan<byte> wire)
         {
-            int common = a.CommonPrefixLength(b);
-            return common == a.Length && common == b.Length ? -1 : common;
+            int p = 0, totalChars = 0, labelCount = 0;
+            while (p < wire.Length)
+            {
+                byte len = wire[p++];
+                if (len == 0) break;
+                totalChars += len;
+                labelCount++;
+                p += len;
+            }
+            if (labelCount == 0) return ".";
+            if (labelCount > 1) totalChars += labelCount - 1; // dots between labels
+
+            char[] buf = ArrayPool<char>.Shared.Rent(totalChars);
+            try
+            {
+                p = 0; int w = 0, written = 0;
+                while (p < wire.Length)
+                {
+                    byte len = wire[p++];
+                    if (len == 0) break;
+                    for (int i = 0; i < len; i++)
+                    {
+                        byte b = wire[p++];
+                        if (b >= 'A' && b <= 'Z') b = (byte)(b + 32);
+                        buf[w++] = (char)b;
+                    }
+                    if (++written < labelCount) buf[w++] = '.';
+                }
+                return new string(buf, 0, totalChars);
+            }
+            finally { ArrayPool<char>.Shared.Return(buf); }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static byte[] AllocKey(ReadOnlySpan<byte> src)
+        private static bool CasState(BranchNode node, BranchState desired, BranchState expected) =>
+            Interlocked.CompareExchange(ref node._state, desired, expected) == expected;
+
+        private static TrieNode[] CloneWithInsertion(BranchState state, int s, TrieNode inserted)
         {
-            byte[] arr = GC.AllocateUninitializedArray<byte>(src.Length);
-            src.CopyTo(arr);
-            return arr;
+            int m = state.Twigs.Length;
+            var twigs = new TrieNode[m + 1];
+            Array.Copy(state.Twigs, 0, twigs, 0, s);
+            twigs[s] = inserted;
+            Array.Copy(state.Twigs, s, twigs, s + 1, m - s);
+            return twigs;
         }
 
-        /// <summary>
-        /// Immutable snapshot of a branch node's children.
-        /// Published atomically via Interlocked.CompareExchange.
-        /// Readers acquire a coherent (Bitmap, Twigs[]) pair via a single volatile read.
-        /// </summary>
-        private sealed class BranchState(ulong bitmap, TrieNode[] twigs)
+        private static TrieNode[] CloneWithRemoval(BranchState state, int s)
         {
-            internal readonly ulong Bitmap = bitmap;
-            internal readonly TrieNode[] Twigs = twigs;
+            int m = state.Twigs.Length - 1;
+            var twigs = new TrieNode[m];
+            Array.Copy(state.Twigs, 0, twigs, 0, s);
+            Array.Copy(state.Twigs, s + 1, twigs, s, m - s);
+            return twigs;
         }
 
-        private abstract class TrieNode { }
-
-        private sealed class BranchNode(int keyOffset, BranchState initialState) : TrieNode
+        private static TrieNode[] CloneWithReplacement(BranchState state, int s, TrieNode repl)
         {
-            internal readonly int KeyOffset = keyOffset;
-            internal volatile BranchState _state = initialState;
-        }
-
-        /// <summary>
-        /// Fully immutable leaf.
-        /// <see cref="EncodedKey"/> is stored to allow SIMD leaf verification and
-        /// </summary>
-        private sealed class LeafNode(string key, byte[] encodedKey, TValue value) : TrieNode
-        {
-            internal readonly string Key = key;
-            internal readonly byte[] EncodedKey = encodedKey; // length excludes double-BNobyte terminator
-            internal readonly TValue Value = value;
-        }
-
-        private volatile TrieNode? _root;
-        private int _count;
-        private readonly byte[] _table;         // s_insensitiveByteToBit or s_sensitiveByteToBit
-        private readonly bool _wire;          // true → string API encodes labels TLD-first
-        private readonly bool _caseSensitive; // stored for SIMD encoding path
-
-        /// <summary>
-        /// Approximate entry count.  Exact when no concurrent writes are in progress;
-        /// may transiently lag by ±1 under concurrent modification.
-        /// <b>Do not use for coordination logic.</b>
-        /// </summary>
-        public int Count => Volatile.Read(ref _count);
-
-        /// <param name="caseSensitive">
-        ///   When <see langword="false"/> (default), upper- and lower-case ASCII
-        ///   letters map to the same trie bit — RFC 4343 correct for DNS.
-        /// </param>
-        /// <param name="wireFormat">
-        ///   When <see langword="true"/>, the string-key API encodes labels
-        ///   right-to-left (TLD first) so iteration order matches RFC 4034 canonical
-        ///   DNS ordering.  Wire-byte overloads always use TLD-first encoding.
-        /// </param>
-        public DnsTrie(bool caseSensitive = false, bool wireFormat = false)
-        {
-            _caseSensitive = caseSensitive;
-            _table = caseSensitive ? s_sensitiveByteToBit : s_insensitiveByteToBit;
-            _wire = wireFormat;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static ulong BitsBelow(int bit) => (1UL << bit) - 1 & BitmapMask;
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static bool HasTwig(BranchState s, byte bit) =>
-            (s.Bitmap & 1UL << bit) != 0;
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int TwigOffset(BranchState s, byte bit) =>
-            BitOperations.PopCount(s.Bitmap & BitsBelow(bit));
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int TwigCount(BranchState s) =>
-            BitOperations.PopCount(s.Bitmap & BitmapMask);
-
-        // NearTwig falls back to slot 0 when the exact bit is absent.
-        // This allows trie descent to continue towards an arbitrary nearby leaf
-        // even when the key is not present — required by the insert and iterate paths.
-        // IMPORTANT: using TwigOffset directly when HasTwig is false causes an
-        // out-of-bounds array access; always use NearTwig for speculative descent.
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int NearTwig(BranchState s, byte bit) =>
-            HasTwig(s, bit) ? TwigOffset(s, bit) : 0;
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static bool IsSplit(byte bit) => (SplitMask & 1UL << bit) != 0;
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static byte SplitLower(byte ch) => (byte)(BLower + ch % 32);
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static byte KeyBit(scoped ReadOnlySpan<byte> key, int keyLen, int off) =>
-            (uint)off < (uint)keyLen ? key[off] : BNobyte;
-
-        //
-        //  NormaliseName:  strips ALL trailing dots; "example.com..." → "example.com".
-        //                  A lone "." (root zone) is preserved.
-        //                   original stripped only one dot, causing mismatched
-        //                  keys for double-qualified names like "example.com..".
-        //
-        //  DecodeChar / SkipChar — RFC 1035 §5.1 escape sequences (slow path only):
-        //    \DDD  three decimal digits → byte value 100·d₀ + 10·d₁ + d₂  [0..255]
-        //    \X    any non-digit        → literal byte value of X
-        //    Activated only when SearchValues detects a backslash in the input.
-        //
-        //  EncodeText / EncodeWire — each has two internal paths:
-        //    Fast (no backslash detected): direct table lookup, no escape branching.
-        //      EncodeWire fast path also uses SIMD IndexOf('.') for label boundaries.
-        //    Slow (backslash present): full DecodeChar / SkipChar per character.
-        //
-        //  EncodeWireRaw — genuine RFC 1035 length-prefixed wire bytes.
-        //    No escapes possible; always takes the direct path; no SearchValues guard.
-        //  strip ALL trailing dots, not just one.
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static ReadOnlySpan<char> NormaliseName(ReadOnlySpan<char> name)
-        {
-            while (name.Length > 1 && name[^1] == '.')
-                name = name[..^1];
-            return name;
+            var twigs = (TrieNode[])state.Twigs.Clone();
+            twigs[s] = repl;
+            return twigs;
         }
 
         // RFC 1035 §5.1 single-character decoder — slow path only.
@@ -342,24 +775,6 @@ namespace BenchmarkTreeBackends.Backends.QP
             return x < 128 ? (byte)x : (byte)0xFF;
         }
 
-        // RFC 1035 §5.1 character skipper — advance past one escaped character.
-        // The inner `else i++` prevents an infinite loop on malformed \D input.
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void SkipChar(ReadOnlySpan<char> name, ref int i)
-        {
-            if (name[i++] != '\\' || i >= name.Length) return;
-            if (name[i] >= '0' && name[i] <= '9')
-            {
-                if (i + 2 < name.Length
-                    && name[i + 1] >= '0' && name[i + 1] <= '9'
-                    && name[i + 2] >= '0' && name[i + 2] <= '9')
-                    i += 3;
-                else
-                    i++;
-            }
-            else { i++; }
-        }
-
         // Emit one decoded source byte as one or two key bytes.
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static void EmitByte(byte ch, byte[] table, Span<byte> key, ref int off)
@@ -367,6 +782,83 @@ namespace BenchmarkTreeBackends.Backends.QP
             byte bit = table[ch];
             key[off++] = bit;
             if (IsSplit(bit)) key[off++] = SplitLower(ch);
+        }
+
+        // Scan forward from minOff to find the first key position at which the
+        // entries in [start, end) are not all equal.
+        // Complexity note: across the entire BuildFromSorted recursion tree, the
+        // total work is O(n·k) because each (entry, bit-position) pair is examined
+        // at most once — minOff only ever advances, never retreats.
+        private static int FindSplitOffset(List<BulkEntry> list, int start, int end, int minOff)
+        {
+            byte[] firstKey = list[start].EncodedKey;
+            for (int off = minOff; off < KeyCapacity; off++)
+            {
+                byte first = BulkKeyByte(firstKey, off);
+                for (int i = start + 1; i < end; i++)
+                    if (BulkKeyByte(list[i].EncodedKey, off) != first)
+                        return off;
+            }
+            return KeyCapacity - 1;
+        }
+
+        // Returns index of first differing byte, or -1 when spans are identical.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int FirstDiffOffset(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b)
+        {
+            int common = a.CommonPrefixLength(b);
+            return common == a.Length && common == b.Length ? -1 : common;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool HasTwig(BranchState s, byte bit) =>
+            (s.Bitmap & 1UL << bit) != 0;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool IsSplit(byte bit) => (SplitMask & 1UL << bit) != 0;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static byte KeyBit(scoped ReadOnlySpan<byte> key, int keyLen, int off) =>
+            (uint)off < (uint)keyLen ? key[off] : BNobyte;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool KeysEqual(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b)
+            => a.SequenceEqual(b);
+
+        // NearTwig falls back to slot 0 when the exact bit is absent.
+        // This allows trie descent to continue towards an arbitrary nearby leaf
+        // even when the key is not present — required by the insert and iterate paths.
+        // IMPORTANT: using TwigOffset directly when HasTwig is false causes an
+        // out-of-bounds array access; always use NearTwig for speculative descent.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int NearTwig(BranchState s, byte bit) =>
+            HasTwig(s, bit) ? TwigOffset(s, bit) : 0;
+
+        //
+        //  NormaliseName:  strips ALL trailing dots; "example.com..." → "example.com".
+        //                  A lone "." (root zone) is preserved.
+        //                   original stripped only one dot, causing mismatched
+        //                  keys for double-qualified names like "example.com..".
+        //
+        //  DecodeChar / SkipChar — RFC 1035 §5.1 escape sequences (slow path only):
+        //    \DDD  three decimal digits → byte value 100·d₀ + 10·d₁ + d₂  [0..255]
+        //    \X    any non-digit        → literal byte value of X
+        //    Activated only when SearchValues detects a backslash in the input.
+        //
+        //  EncodeText / EncodeWire — each has two internal paths:
+        //    Fast (no backslash detected): direct table lookup, no escape branching.
+        //      EncodeWire fast path also uses SIMD IndexOf('.') for label boundaries.
+        //    Slow (backslash present): full DecodeChar / SkipChar per character.
+        //
+        //  EncodeWireRaw — genuine RFC 1035 length-prefixed wire bytes.
+        //    No escapes possible; always takes the direct path; no SearchValues guard.
+        //  strip ALL trailing dots, not just one.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static ReadOnlySpan<char> NormaliseName(ReadOnlySpan<char> name)
+        {
+            while (name.Length > 1 && name[^1] == '.')
+                name = name[..^1];
+            return name;
         }
 
         //
@@ -526,6 +1018,133 @@ namespace BenchmarkTreeBackends.Backends.QP
             return i;
         }
 
+        // RFC 1035 §5.1 character skipper — advance past one escaped character.
+        // The inner `else i++` prevents an infinite loop on malformed \D input.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void SkipChar(ReadOnlySpan<char> name, ref int i)
+        {
+            if (name[i++] != '\\' || i >= name.Length) return;
+            if (name[i] >= '0' && name[i] <= '9')
+            {
+                if (i + 2 < name.Length
+                    && name[i + 1] >= '0' && name[i + 1] <= '9'
+                    && name[i + 2] >= '0' && name[i + 2] <= '9')
+                    i += 3;
+                else
+                    i++;
+            }
+            else { i++; }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static byte SplitLower(byte ch) => (byte)(BLower + ch % 32);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int TwigCount(BranchState s) =>
+                    BitOperations.PopCount(s.Bitmap & BitmapMask);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int TwigOffset(BranchState s, byte bit) =>
+                    BitOperations.PopCount(s.Bitmap & BitsBelow(bit));
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool CasRoot(TrieNode? desired, TrieNode? expected) =>
+                    Interlocked.CompareExchange(ref _root, desired, expected) == expected;
+
+        [SkipLocalsInit]
+        private bool DeleteCore(
+                    ReadOnlySpan<byte> keySpan, Span<byte> key, int len,
+                    out string foundKey, out TValue foundValue)
+        {
+            while (true)
+            {
+                TrieNode? root = _root;
+                if (root is null)
+                { foundKey = default!; foundValue = default!; return false; }
+
+                BranchNode? grandParent = null;
+                BranchState? grandParentState = null;
+                byte grandBit = 0;
+                BranchNode? parent = null;
+                BranchState? parentState = null;
+                byte parentBit = 0;
+                TrieNode n = root;
+
+                while (n is BranchNode branch)
+                {
+                    BranchState state = branch._state;
+                    byte bit = KeyBit(key, len, branch.KeyOffset);
+                    if (!HasTwig(state, bit))
+                    { foundKey = default!; foundValue = default!; return false; }
+
+                    grandParent = parent;
+                    grandParentState = parentState;
+                    grandBit = parentBit;
+                    parent = branch;
+                    parentState = state;
+                    parentBit = bit;
+                    n = state.Twigs[TwigOffset(state, bit)];
+                }
+
+                var leaf = (LeafNode)n;
+                if (!KeysEqual(leaf.EncodedKey, keySpan))
+                { foundKey = default!; foundValue = default!; return false; }
+
+                foundKey = leaf.Key;
+                foundValue = leaf.Value;
+
+                // Case 1: sole entry.
+                if (parent is null)
+                {
+                    if (CasRoot(desired: null, expected: leaf))
+                    { Interlocked.Decrement(ref _count); return true; }
+                    continue;
+                }
+
+                int deletedSlot = TwigOffset(parentState!, parentBit);
+                int childCount = TwigCount(parentState!);
+
+                // Case 2: collapse — parent had exactly 2 children.
+                if (childCount == 2)
+                {
+                    TrieNode sibling = parentState!.Twigs[deletedSlot == 0 ? 1 : 0];
+                    bool ok;
+                    if (grandParent is null)
+                        ok = CasRoot(sibling, expected: parent);
+                    else
+                    {
+                        int gs = TwigOffset(grandParentState!, grandBit);
+                        ok = CasState(grandParent,
+                                 new BranchState(grandParentState!.Bitmap,
+                                     CloneWithReplacement(grandParentState!, gs, sibling)),
+                                 expected: grandParentState!);
+                    }
+                    if (ok) { Interlocked.Decrement(ref _count); return true; }
+                    continue;
+                }
+
+                // Case 3: shrink — parent had 3+ children.
+                {
+                    var next = new BranchState(
+                        parentState!.Bitmap & ~(1UL << parentBit),
+                        CloneWithRemoval(parentState!, deletedSlot));
+                    if (CasState(parent, next, expected: parentState!))
+                    { Interlocked.Decrement(ref _count); return true; }
+                    continue;
+                }
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private int Encode(ReadOnlySpan<char> name, scoped Span<byte> key)
+        {
+            ReadOnlySpan<char> n = NormaliseName(name);
+            return _wire ? EncodeWire(n, key) : EncodeText(n, key);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private int Encode(string name, scoped Span<byte> key) => Encode(name.AsSpan(), key);
+
         // Encode left-to-right with RFC 1035 §5.1 escape handling.
         [SkipLocalsInit]
         private int EncodeText(ReadOnlySpan<char> name, scoped Span<byte> key)
@@ -684,188 +1303,6 @@ namespace BenchmarkTreeBackends.Backends.QP
             return off;
         }
 
-        // Convert RFC 1035 wire bytes to canonical presentation string.
-        // Case-folds to lower-case; joins labels with '.'.  Root zone → ".".
-        private static string CanonicaliseWireName(ReadOnlySpan<byte> wire)
-        {
-            int p = 0, totalChars = 0, labelCount = 0;
-            while (p < wire.Length)
-            {
-                byte len = wire[p++];
-                if (len == 0) break;
-                totalChars += len;
-                labelCount++;
-                p += len;
-            }
-            if (labelCount == 0) return ".";
-            if (labelCount > 1) totalChars += labelCount - 1; // dots between labels
-
-            char[] buf = ArrayPool<char>.Shared.Rent(totalChars);
-            try
-            {
-                p = 0; int w = 0, written = 0;
-                while (p < wire.Length)
-                {
-                    byte len = wire[p++];
-                    if (len == 0) break;
-                    for (int i = 0; i < len; i++)
-                    {
-                        byte b = wire[p++];
-                        if (b >= 'A' && b <= 'Z') b = (byte)(b + 32);
-                        buf[w++] = (char)b;
-                    }
-                    if (++written < labelCount) buf[w++] = '.';
-                }
-                return new string(buf, 0, totalChars);
-            }
-            finally { ArrayPool<char>.Shared.Return(buf); }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private int Encode(ReadOnlySpan<char> name, scoped Span<byte> key)
-        {
-            ReadOnlySpan<char> n = NormaliseName(name);
-            return _wire ? EncodeWire(n, key) : EncodeText(n, key);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private int Encode(string name, scoped Span<byte> key) => Encode(name.AsSpan(), key);
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool CasRoot(TrieNode? desired, TrieNode? expected) =>
-            Interlocked.CompareExchange(ref _root, desired, expected) == expected;
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static bool CasState(BranchNode node, BranchState desired, BranchState expected) =>
-            Interlocked.CompareExchange(ref node._state, desired, expected) == expected;
-
-        private static TrieNode[] CloneWithReplacement(BranchState state, int s, TrieNode repl)
-        {
-            var twigs = (TrieNode[])state.Twigs.Clone();
-            twigs[s] = repl;
-            return twigs;
-        }
-
-        private static TrieNode[] CloneWithInsertion(BranchState state, int s, TrieNode inserted)
-        {
-            int m = state.Twigs.Length;
-            var twigs = new TrieNode[m + 1];
-            Array.Copy(state.Twigs, 0, twigs, 0, s);
-            twigs[s] = inserted;
-            Array.Copy(state.Twigs, s, twigs, s + 1, m - s);
-            return twigs;
-        }
-
-        private static TrieNode[] CloneWithRemoval(BranchState state, int s)
-        {
-            int m = state.Twigs.Length - 1;
-            var twigs = new TrieNode[m];
-            Array.Copy(state.Twigs, 0, twigs, 0, s);
-            Array.Copy(state.Twigs, s + 1, twigs, s, m - s);
-            return twigs;
-        }
-
-        /// <summary>
-        /// Retrieves the value associated with <paramref name="name"/>.
-        /// </summary>
-        [SkipLocalsInit]
-        public bool TryGet(string name, out TValue value)
-        {
-            TrieNode? n = _root;
-            if (n is null) { value = default!; return false; }
-
-            Span<byte> key = stackalloc byte[KeyCapacity];
-            int len = Encode(name, key);
-            ReadOnlySpan<byte> keySpan = key[..len];
-
-            while (n is BranchNode branch)
-            {
-                BranchState state = branch._state;
-                byte bit = KeyBit(key, len, branch.KeyOffset);
-                if (!HasTwig(state, bit)) { value = default!; return false; }
-                n = state.Twigs[TwigOffset(state, bit)];
-            }
-
-            var leaf = (LeafNode)n;
-            if (!KeysEqual(leaf.EncodedKey, keySpan)) { value = default!; return false; }
-            value = leaf.Value;
-            return true;
-        }
-
-        /// <summary>
-        /// Retrieves the value for the RFC 1035 wire-format name
-        /// <paramref name="wireName"/> (e.g. <c>\x03www\x07example\x03com\x00</c>).
-        /// </summary>
-        [SkipLocalsInit]
-        public bool TryGet(ReadOnlySpan<byte> wireName, out TValue value)
-        {
-            TrieNode? n = _root;
-            if (n is null) { value = default!; return false; }
-
-            Span<byte> key = stackalloc byte[KeyCapacity];
-            int len = EncodeWireRaw(wireName, key);
-            ReadOnlySpan<byte> keySpan = key[..len];
-
-            while (n is BranchNode branch)
-            {
-                BranchState state = branch._state;
-                byte bit = KeyBit(key, len, branch.KeyOffset);
-                if (!HasTwig(state, bit)) { value = default!; return false; }
-                n = state.Twigs[TwigOffset(state, bit)];
-            }
-
-            var leaf = (LeafNode)n;
-            if (!KeysEqual(leaf.EncodedKey, keySpan)) { value = default!; return false; }
-            value = leaf.Value;
-            return true;
-        }
-
-        /// <summary>
-        /// Returns <see langword="true"/> if <paramref name="name"/> is present in the trie.
-        /// </summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool ContainsKey(string name) => TryGet(name, out _);
-
-        /// <summary>
-        /// Returns the value associated with <paramref name="name"/>,
-        /// or <c>default</c> when the key is absent.
-        /// </summary>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public TValue? GetValueOrDefault(string name) =>
-            TryGet(name, out TValue v) ? v : default;
-
-        /// <summary>
-        /// Inserts or updates <paramref name="name"/> → <paramref name="value"/>.
-        /// </summary>
-        /// <returns>
-        ///   <see langword="true"/> if the key was newly inserted;
-        ///   <see langword="false"/> if an existing entry was updated.
-        /// </returns>
-        [SkipLocalsInit]
-        public bool Set(string name, TValue value)
-        {
-            Span<byte> newKey = stackalloc byte[KeyCapacity];
-            int newLen = Encode(name.AsSpan(), newKey);
-            return SetCoreImpl(newKey, newLen, storedKey: name, value);
-        }
-
-        /// <summary>
-        /// Inserts or updates the entry identified by the RFC 1035 wire-format name
-        /// <paramref name="wireName"/>.
-        /// </summary>
-        /// <returns>
-        ///   <see langword="true"/> if the key was newly inserted;
-        ///   <see langword="false"/> if an existing entry was updated.
-        /// </returns>
-        [SkipLocalsInit]
-        public bool SetWire(ReadOnlySpan<byte> wireName, TValue value)
-        {
-            string canonical = CanonicaliseWireName(wireName);
-            Span<byte> newKey = stackalloc byte[KeyCapacity];
-            int newLen = EncodeWireRaw(wireName, newKey);
-            return SetCoreImpl(newKey, newLen, storedKey: canonical, value);
-        }
-
         // SetCoreImpl: unified CAS retry loop for Set and SetWire.
         // Correctness of single-descent update: when key K exists, HasTwig is true
         // at every node on its path, so NearTwig follows the identical descent.
@@ -998,363 +1435,42 @@ namespace BenchmarkTreeBackends.Backends.QP
             }
         }
 
-        /// <summary>
-        /// Removes the entry keyed by <paramref name="name"/> and returns the stored
-        /// key and value.
-        /// </summary>
-        /// <returns><see langword="true"/> if found and removed.</returns>
-        /// <remarks>
-        /// <para>Three single-CAS cases:</para>
-        /// <list type="number">
-        ///   <item>Root is the lone leaf → CAS root to null.</item>
-        ///   <item>Parent has 2 children → CAS grandparent to bypass parent (collapse).</item>
-        ///   <item>Parent has 3+ children → CAS parent to shrunk BranchState.</item>
-        /// </list>
-        /// </remarks>
-        [SkipLocalsInit]
-        public bool Delete(string name, out string foundKey, out TValue foundValue)
+        #endregion private
+
+        #region private classes
+
+        private sealed class BranchNode(int keyOffset, BranchState initialState) : TrieNode
         {
-            Span<byte> key = stackalloc byte[KeyCapacity];
-            int len = Encode(name, key);
-            return DeleteCore(key[..len], key, len, out foundKey, out foundValue);
+            internal readonly int KeyOffset = keyOffset;
+            internal volatile BranchState _state = initialState;
         }
 
         /// <summary>
-        /// Removes the entry keyed by <paramref name="name"/>.
+        /// Immutable snapshot of a branch node's children.
+        /// Published atomically via Interlocked.CompareExchange.
+        /// Readers acquire a coherent (Bitmap, Twigs[]) pair via a single volatile read.
         /// </summary>
-        /// <returns><see langword="true"/> if the key was found and removed.</returns>
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool Delete(string name) => Delete(name, out _, out _);
-
-        /// <summary>
-        /// Removes the entry identified by the RFC 1035 wire-format name
-        /// <paramref name="wireName"/>.
-        /// </summary>
-        [SkipLocalsInit]
-        public bool DeleteWire(ReadOnlySpan<byte> wireName, out string foundKey, out TValue foundValue)
+        private sealed class BranchState(ulong bitmap, TrieNode[] twigs)
         {
-            Span<byte> key = stackalloc byte[KeyCapacity];
-            int len = EncodeWireRaw(wireName, key);
-            return DeleteCore(key[..len], key, len, out foundKey, out foundValue);
-        }
-
-        [SkipLocalsInit]
-        private bool DeleteCore(
-            ReadOnlySpan<byte> keySpan, Span<byte> key, int len,
-            out string foundKey, out TValue foundValue)
-        {
-            while (true)
-            {
-                TrieNode? root = _root;
-                if (root is null)
-                { foundKey = default!; foundValue = default!; return false; }
-
-                BranchNode? grandParent = null;
-                BranchState? grandParentState = null;
-                byte grandBit = 0;
-                BranchNode? parent = null;
-                BranchState? parentState = null;
-                byte parentBit = 0;
-                TrieNode n = root;
-
-                while (n is BranchNode branch)
-                {
-                    BranchState state = branch._state;
-                    byte bit = KeyBit(key, len, branch.KeyOffset);
-                    if (!HasTwig(state, bit))
-                    { foundKey = default!; foundValue = default!; return false; }
-
-                    grandParent = parent;
-                    grandParentState = parentState;
-                    grandBit = parentBit;
-                    parent = branch;
-                    parentState = state;
-                    parentBit = bit;
-                    n = state.Twigs[TwigOffset(state, bit)];
-                }
-
-                var leaf = (LeafNode)n;
-                if (!KeysEqual(leaf.EncodedKey, keySpan))
-                { foundKey = default!; foundValue = default!; return false; }
-
-                foundKey = leaf.Key;
-                foundValue = leaf.Value;
-
-                // Case 1: sole entry.
-                if (parent is null)
-                {
-                    if (CasRoot(desired: null, expected: leaf))
-                    { Interlocked.Decrement(ref _count); return true; }
-                    continue;
-                }
-
-                int deletedSlot = TwigOffset(parentState!, parentBit);
-                int childCount = TwigCount(parentState!);
-
-                // Case 2: collapse — parent had exactly 2 children.
-                if (childCount == 2)
-                {
-                    TrieNode sibling = parentState!.Twigs[deletedSlot == 0 ? 1 : 0];
-                    bool ok;
-                    if (grandParent is null)
-                        ok = CasRoot(sibling, expected: parent);
-                    else
-                    {
-                        int gs = TwigOffset(grandParentState!, grandBit);
-                        ok = CasState(grandParent,
-                                 new BranchState(grandParentState!.Bitmap,
-                                     CloneWithReplacement(grandParentState!, gs, sibling)),
-                                 expected: grandParentState!);
-                    }
-                    if (ok) { Interlocked.Decrement(ref _count); return true; }
-                    continue;
-                }
-
-                // Case 3: shrink — parent had 3+ children.
-                {
-                    var next = new BranchState(
-                        parentState!.Bitmap & ~(1UL << parentBit),
-                        CloneWithRemoval(parentState!, deletedSlot));
-                    if (CasState(parent, next, expected: parentState!))
-                    { Interlocked.Decrement(ref _count); return true; }
-                    continue;
-                }
-            }
+            internal readonly ulong Bitmap = bitmap;
+            internal readonly TrieNode[] Twigs = twigs;
         }
 
         /// <summary>
-        /// Advances an in-order cursor to the lexicographically next entry.
-        /// Pass <see langword="null"/> to return the first entry.
+        /// Fully immutable leaf.
+        /// <see cref="EncodedKey"/> is stored to allow SIMD leaf verification and
         /// </summary>
-        /// <remarks>
-        /// The cursor is a plain <c>string</c>; no iterator object is allocated.
-        /// Snapshot semantics: a concurrent delete may cause a removed key to appear once.
-        /// </remarks>
-        [SkipLocalsInit]
-        public bool TryGetNext(string? currentName, out string nextName, out TValue nextValue)
+        private sealed class LeafNode(string key, byte[] encodedKey, TValue value) : TrieNode
         {
-            TrieNode? root = _root;
-            if (root is null) { nextName = default!; nextValue = default!; return false; }
+            internal readonly byte[] EncodedKey = encodedKey;
+            internal readonly string Key = key;
 
-            Span<byte> queryKey = stackalloc byte[KeyCapacity];
-            int queryLen;
-            if (currentName is null)
-            {
-                // diffOff=0 causes Pass 2 to break immediately; leftmost-leaf walk then returns the first entry.
-                queryLen = 0;
-                queryKey[0] = BNobyte;
-            }
-            else
-            {
-                queryLen = Encode(currentName, queryKey);
-            }
-
-            // Pass 1: NearTwig descent to a nearby leaf:
-            TrieNode n = root;
-            while (n is BranchNode b)
-            {
-                BranchState st = b._state;
-                n = st.Twigs[NearTwig(st, KeyBit(queryKey, queryLen, b.KeyOffset))];
-            }
-
-            //  use nearLeaf.EncodedKey directly (already encoded); no re-encode.
-            // The diffOff computation mirrors the C original's loop:
-            //   for(off = 0; off <= newl; off++) — tests up to and including the
-            //   BNobyte terminator at index queryLen.
-            // We replicate this by slicing queryLen+1 bytes from queryKey and up to
-            // queryLen+1 bytes from nearKey (the virtual terminator beyond nearKey.Length
-            // is BNobyte; when nearKey is shorter we pass it as-is and CommonPrefixLength
-            // reports the mismatch at nearKey.Length, which is ≤ queryLen).
-            var nearLeaf = (LeafNode)n;
-            ReadOnlySpan<byte> nearKey = nearLeaf.EncodedKey;
-            int diffOff = queryKey[..Math.Min(queryLen + 1, KeyCapacity)].CommonPrefixLength(
-                              nearKey.Length > queryLen
-                                  ? nearKey[..(queryLen + 1)]
-                                  : nearKey);
-            // Clamp: the C loop runs to off == newl (queryLen) at most.
-            if (diffOff > queryLen) diffOff = queryLen;
-
-            // Pass 2: walk the query path and record the deepest right-sibling subtree.
-            // next = root for null currentName (first-entry); null otherwise.
-            TrieNode? next = currentName is null ? root : null;
-            n = root;
-
-            while (n is BranchNode branch)
-            {
-                if (branch.KeyOffset >= diffOff) break;
-
-                BranchState state = branch._state;
-                byte bit = KeyBit(queryKey, queryLen, branch.KeyOffset);
-                if (!HasTwig(state, bit)) break;
-
-                int s = TwigOffset(state, bit);
-                int m = TwigCount(state) - 1;
-                if (s < m) next = state.Twigs[s + 1]; // right sibling subtree
-                n = state.Twigs[s];
-            }
-
-            // Walk next down to its leftmost leaf.
-            while (next is BranchNode nb)
-            {
-                BranchState st = nb._state;
-                next = st.Twigs[0];
-            }
-
-            if (next is LeafNode result)
-            {
-                nextName = result.Key;
-                nextValue = result.Value;
-                return true;
-            }
-
-            nextName = default!;
-            nextValue = default!;
-            return false;
+            // length excludes double-BNobyte terminator
+            internal readonly TValue Value = value;
         }
 
-        /// <summary>
-        /// Returns diagnostic node, leaf, and depth counts for the current snapshot.
-        /// Iterative BFS; snapshot semantics apply.
-        /// </summary>
-        public TrieStats GetStats()
-        {
-            TrieNode? root = _root;
-            if (root is null) return new TrieStats(0, 0, 0);
-
-            var stack = new Stack<(TrieNode Node, int Depth)>(64);
-            stack.Push((root, 0));
-            int nodes = 0, leaves = 0, maxDepth = 0;
-
-            while (stack.Count > 0)
-            {
-                var (cur, depth) = stack.Pop();
-                nodes++;
-                if (depth > maxDepth) maxDepth = depth;
-
-                if (cur is LeafNode) { leaves++; continue; }
-
-                BranchState state = ((BranchNode)cur)._state;
-                foreach (TrieNode child in state.Twigs)
-                    stack.Push((child, depth + 1));
-            }
-
-            return new TrieStats(nodes, leaves, maxDepth);
-        }
-
-        /// <summary>
-        /// Constructs a fully optimised trie from a data source in
-        /// <b>O(n log n + n·k)</b>.  Duplicate keys use last-entry-wins semantics.
-        /// </summary>
-        [SkipLocalsInit]
-        public static DnsTrie<TValue> BuildBulk(
-            IEnumerable<(string Name, TValue Value)> items,
-            bool caseSensitive = false,
-            bool wireFormat = false)
-        {
-            ArgumentNullException.ThrowIfNull(items);
-
-            var trie = new DnsTrie<TValue>(caseSensitive, wireFormat);
-            var list = new List<BulkEntry>(capacity: 1024);
-
-            // Hoisted above the loop; the buffer is fully overwritten before AllocKey reads it.
-            // frame slot is reused on every iteration rather than growing the stack
-            // by KeyCapacity bytes per entry.  The buffer is fully overwritten by
-            // Encode* before AllocKey reads keyBuf[..len], so there is no
-            // stale-data hazard.
-            Span<byte> keyBuf = stackalloc byte[KeyCapacity];
-
-            foreach (var (name, value) in items)
-            {
-                if (name is null) throw new ArgumentException("Item name must not be null.", nameof(items));
-
-                ReadOnlySpan<char> normalised = NormaliseName(name.AsSpan());
-
-                int len = wireFormat
-                    ? trie.EncodeWire(normalised, keyBuf)
-                    : trie.EncodeText(normalised, keyBuf);
-
-                list.Add(new BulkEntry(normalised.ToString(), AllocKey(keyBuf[..len]), value));
-            }
-
-            if (list.Count == 0) return trie;
-
-            list.Sort(static (a, b) =>
-                a.EncodedKey.AsSpan().SequenceCompareTo(b.EncodedKey.AsSpan()));
-
-            //  O(n) deduplication — single forward pass.
-            // Sorted order guarantees duplicates are adjacent; we keep the last
-            // entry for each key (last-wins, consistent with Set() semantics).
-            int w = 0;
-            for (int i = 0; i < list.Count; i++)
-            {
-                // If the next entry has the same encoded key, skip this one (next wins).
-                if (i + 1 < list.Count &&
-                    list[i].EncodedKey.AsSpan().SequenceEqual(list[i + 1].EncodedKey.AsSpan()))
-                    continue;
-                list[w++] = list[i];
-            }
-            if (w < list.Count)
-                list.RemoveRange(w, list.Count - w);
-
-            TrieNode builtRoot = BuildFromSorted(list, 0, list.Count, depth: 0);
-
-            // volatile (release) write.  Passing a volatile field by ref to
-            // Volatile.Write strips that guarantee and triggers CS0420.
-            trie._root = builtRoot;
-            Volatile.Write(ref trie._count, list.Count);
-            return trie;
-        }
-
-        /// <summary>
-        /// Inline overload using <c>params ReadOnlySpan</c> (C# 13 / .NET 9).
-        /// For ≤ <c>16</c> items the compiler stack-allocates the tuple array and
-        /// this overload inserts directly, with zero heap allocation at the call site.
-        /// For larger sets the sorted bulk path is used.
-        /// </summary>
-        /// <remarks>
-        /// <para>
-        /// The <c>params</c> parameter must be last (CS0231).  Pass <paramref name="caseSensitive"/>
-        /// and <paramref name="wireFormat"/> as named arguments when non-default values are needed:
-        /// </para>
-        /// </remarks>
-        /// <example>
-        /// <code>
-        /// // Default options — positional params, no named arguments needed:
-        /// var trie = DnsTrie&lt;string&gt;.BuildBulk(
-        ///     ("example.com",     "v4"),
-        ///     ("ns1.example.com", "ns"));
-        ///
-        /// // Non-default options — pass them as named arguments before the tuples:
-        /// var zone = DnsTrie&lt;string&gt;.BuildBulk(
-        ///     caseSensitive: false, wireFormat: true,
-        ///     ("example.com", "v4"), ("ns1.example.com", "ns"));
-        /// </code>
-        /// </example>
-        public static DnsTrie<TValue> BuildBulk(
-            bool caseSensitive = false,
-            bool wireFormat = false,
-            params ReadOnlySpan<(string Name, TValue Value)> items)
-        {
-            //  for small item counts, direct Set() is cheaper than
-            // sort + bulk-build and preserves zero call-site heap allocation.
-            if (items.Length <= DirectInsertThreshold)
-            {
-                var trie = new DnsTrie<TValue>(caseSensitive, wireFormat);
-                foreach (var (name, value) in items)
-                {
-                    if (name is null) throw new ArgumentException("Item name must not be null.", nameof(items));
-                    trie.Set(name, value);
-                }
-                return trie;
-            }
-
-            // For larger sets, fall through to the sorted bulk path.
-            // The span must be materialised before calling the IEnumerable overload
-            // because the span is only valid for this call frame.
-            var list = new List<(string, TValue)>(items.Length);
-            foreach (var item in items) list.Add(item);
-            return BuildBulk((IEnumerable<(string, TValue)>)list, caseSensitive, wireFormat);
-        }
+        private abstract class TrieNode
+        { }
 
         //  readonly record struct — three fields stored inline in
         // List<BulkEntry>, eliminating one heap allocation + GC root per entry.
@@ -1363,76 +1479,20 @@ namespace BenchmarkTreeBackends.Backends.QP
         // this is a net win of ~24 bytes of object header per entry.
         private readonly record struct BulkEntry(string Name, byte[] EncodedKey, TValue Value);
 
-        private static TrieNode BuildFromSorted(List<BulkEntry> list, int start, int end, int depth)
-        {
-            if (end - start == 1)
-            {
-                var x = list[start];
-                return new LeafNode(x.Name, x.EncodedKey, x.Value);
-            }
+        #endregion private classes
 
-            int splitOff = FindSplitOffset(list, start, end, depth);
-            ulong bitmap = 0;
-            var children = new List<TrieNode>(capacity: 8);
-
-            int i = start;
-            while (i < end)
-            {
-                byte bit = BulkKeyByte(list[i].EncodedKey, splitOff);
-                int j = i + 1;
-                while (j < end && BulkKeyByte(list[j].EncodedKey, splitOff) == bit) j++;
-                bitmap |= 1UL << bit;
-                children.Add(BuildFromSorted(list, i, j, splitOff + 1));
-                i = j;
-            }
-
-            return new BranchNode(splitOff, new BranchState(bitmap, children.ToArray()));
-        }
-
-        // Scan forward from minOff to find the first key position at which the
-        // entries in [start, end) are not all equal.
-        // Complexity note: across the entire BuildFromSorted recursion tree, the
-        // total work is O(n·k) because each (entry, bit-position) pair is examined
-        // at most once — minOff only ever advances, never retreats.
-        private static int FindSplitOffset(List<BulkEntry> list, int start, int end, int minOff)
-        {
-            byte[] firstKey = list[start].EncodedKey;
-            for (int off = minOff; off < KeyCapacity; off++)
-            {
-                byte first = BulkKeyByte(firstKey, off);
-                for (int i = start + 1; i < end; i++)
-                    if (BulkKeyByte(list[i].EncodedKey, off) != first)
-                        return off;
-            }
-            return KeyCapacity - 1;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static byte BulkKeyByte(byte[] key, int off) =>
-            (uint)off < (uint)key.Length ? key[off] : BNobyte;
-
-        /// <inheritdoc/>
-        public IEnumerator<KeyValuePair<string, TValue>> GetEnumerator()
-        {
-            string? cursor = null;
-            while (TryGetNext(cursor, out string name, out TValue val))
-            {
-                yield return new KeyValuePair<string, TValue>(name, val);
-                cursor = name;
-            }
-        }
-
-        /// <inheritdoc/>
-        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
-
-        [DoesNotReturn]
-        private static void ThrowTooManyLabels() =>
-            throw new ArgumentException(
-                $"Domain name exceeds the RFC 1035 §2.3.4 limit of {MaxLabelCount} labels.");
+        #region helpers
 
         [DoesNotReturn]
         private static void ThrowDecodeOverflow() =>
             throw new ArgumentException(
                 "DNS escape \\DDD value is not a valid octet (must be 0–255, RFC 1035 §5.1).");
+
+        [DoesNotReturn]
+        private static void ThrowTooManyLabels() =>
+    throw new ArgumentException(
+        $"Domain name exceeds the RFC 1035 §2.3.4 limit of {MaxLabelCount} labels.");
+
+        #endregion helpers
     }
 }
