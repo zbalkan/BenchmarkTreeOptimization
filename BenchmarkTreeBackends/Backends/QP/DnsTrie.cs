@@ -608,7 +608,7 @@ namespace BenchmarkTreeBackends.Backends.QP
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static ulong BitsBelow(int bit) => (1UL << bit) - 1 & BitmapMask;
+        private static ulong BitsBelow(int bit) => ((1UL << bit) - 1) & BitmapMask;
 
         private static TrieNode BuildFromSorted(List<BulkEntry> list, int start, int end, int depth)
         {
