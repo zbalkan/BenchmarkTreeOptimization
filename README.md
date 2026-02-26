@@ -32,15 +32,16 @@ Large realistic domain trees with deep hierarchies and frequent lookups.
 
 ## Benchmark Results
 
-| Method                | Mean        | Error     | StdDev     | Ratio | RatioSD | Gen0        | Allocated   | Alloc Ratio |
-|---------------------- |------------:|----------:|-----------:|------:|--------:|------------:|------------:|------------:|
-| ConcurrentDictionary  |    94.72 ms |  1.405 ms |   1.173 ms |  1.00 |    0.02 |           - |           - |          NA |
-| InMemoryDomainTree    |   846.43 ms | 61.905 ms | 177.617 ms |  8.94 |    1.87 |  53000.0000 | 446153824 B |          NA |
-| LmdbBackedDomainTree  | 1,108.85 ms | 22.112 ms |  49.911 ms | 11.71 |    0.54 | 111000.0000 | 935384968 B |          NA |
-| LmdbBackedDomainTree2 |   963.85 ms | 16.997 ms |  15.899 ms | 10.18 |    0.20 |  93000.0000 | 781538696 B |          NA |
-| MmapBackedDomainTree  | 1,081.19 ms | 20.721 ms |  19.382 ms | 11.42 |    0.24 |  93000.0000 | 781538696 B |          NA |
-| MmapBackedDomainTree2 |   879.43 ms | 13.240 ms |  11.056 ms |  9.29 |    0.16 |  75000.0000 | 627692424 B |          NA |
-| DnsTrie               |   276.18 ms |  5.333 ms |   6.348 ms |  2.92 |    0.07 |           - |           - |          NA |
+| Method                | Mean        | Error     | StdDev    | Ratio | RatioSD | Gen0        | Allocated   | Alloc Ratio |
+|---------------------- |------------:|----------:|----------:|------:|--------:|------------:|------------:|------------:|
+| ConcurrentDictionary  |    97.97 ms |  1.946 ms |  4.736 ms |  1.00 |    0.07 |           - |           - |          NA |
+| InMemoryDomainTree    |   868.52 ms |  4.411 ms |  3.910 ms |  8.88 |    0.41 |  53000.0000 | 446153824 B |          NA |
+| LmdbBackedDomainTree  | 1,393.77 ms | 21.452 ms | 17.914 ms | 14.26 |    0.68 | 111000.0000 | 935384968 B |          NA |
+| LmdbBackedDomainTree2 | 1,164.14 ms | 17.799 ms | 15.778 ms | 11.91 |    0.57 |  93000.0000 | 781538696 B |          NA |
+| MmapBackedDomainTree  | 1,265.08 ms | 24.009 ms | 21.283 ms | 12.94 |    0.63 |  93000.0000 | 781538696 B |          NA |
+| MmapBackedDomainTree2 |   813.77 ms | 14.079 ms | 17.291 ms |  8.32 |    0.42 |  75000.0000 | 627692424 B |          NA |
+| DnsTrie               |   361.87 ms |  8.666 ms | 24.157 ms |  3.70 |    0.30 |           - |           - |          NA |
+| DnsTrieWireFormat     |   545.00 ms |  6.730 ms |  5.620 ms |  5.57 |    0.26 |           - |           - |          NA |
 
 
 ### Key observations
