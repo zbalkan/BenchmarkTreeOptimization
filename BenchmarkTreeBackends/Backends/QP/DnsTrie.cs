@@ -124,7 +124,7 @@ namespace BenchmarkTreeBackends.Backends.QP
         private const byte BHyphen = 5;
 
         // Bits 2–52 (51 bits). Excludes key-offset field (53+) and reserved bits 0–1.
-        private const ulong BitmapMask = (1UL << 53) - 1 & ~3UL;
+        private const ulong BitmapMask = ((1UL << 53) - 1) & ~3UL;
 
         // '`' — direct single-bit
         private const byte BLetter = 22;
@@ -226,9 +226,7 @@ namespace BenchmarkTreeBackends.Backends.QP
 
             // Hoisted above the loop; the buffer is fully overwritten before AllocKey reads it.
             // frame slot is reused on every iteration rather than growing the stack
-            // by KeyCapacity bytes per entry.  The buffer is fully overwritten by
-            // Encode* before AllocKey reads keyBuf[..len], so there is no
-            // stale-data hazard.
+            // by KeyCapacity bytes per entry.
             Span<byte> keyBuf = stackalloc byte[KeyCapacity];
 
             foreach (var (name, value) in items)
@@ -610,8 +608,6 @@ namespace BenchmarkTreeBackends.Backends.QP
             return arr;
         }
 
-        // true → string API encodes labels TLD-first
-        // stored for SIMD encoding path
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static ulong BitsBelow(int bit) => (1UL << bit) - 1 & BitmapMask;
 
@@ -840,11 +836,6 @@ namespace BenchmarkTreeBackends.Backends.QP
         //                   original stripped only one dot, causing mismatched
         //                  keys for double-qualified names like "example.com..".
         //
-        //  DecodeChar / SkipChar — RFC 1035 §5.1 escape sequences (slow path only):
-        //    \DDD  three decimal digits → byte value 100·d₀ + 10·d₁ + d₂  [0..255]
-        //    \X    any non-digit        → literal byte value of X
-        //    Activated only when SearchValues detects a backslash in the input.
-        //
         //  EncodeText / EncodeWire — each has two internal paths:
         //    Fast (no backslash detected): direct table lookup, no escape branching.
         //      EncodeWire fast path also uses SIMD IndexOf('.') for label boundaries.
@@ -958,11 +949,10 @@ namespace BenchmarkTreeBackends.Backends.QP
         /// (no UTF-16 narrowing required).
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int SimdEncodeCleanBytes(
-            ReadOnlySpan<byte> bytes,
-            Span<byte> key,
-            ref int off,
-            bool caseInsensitive)
+        private static int SimdEncodeCleanBytes(ReadOnlySpan<byte> bytes,
+                                                Span<byte> key,
+                                                ref int off,
+                                                bool caseInsensitive)
         {
             if (!Vector128.IsHardwareAccelerated || bytes.Length < 16) return 0;
 
@@ -1016,24 +1006,6 @@ namespace BenchmarkTreeBackends.Backends.QP
                 i += 16;
             }
             return i;
-        }
-
-        // RFC 1035 §5.1 character skipper — advance past one escaped character.
-        // The inner `else i++` prevents an infinite loop on malformed \D input.
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void SkipChar(ReadOnlySpan<char> name, ref int i)
-        {
-            if (name[i++] != '\\' || i >= name.Length) return;
-            if (name[i] >= '0' && name[i] <= '9')
-            {
-                if (i + 2 < name.Length
-                    && name[i + 1] >= '0' && name[i + 1] <= '9'
-                    && name[i + 2] >= '0' && name[i + 2] <= '9')
-                    i += 3;
-                else
-                    i++;
-            }
-            else { i++; }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1182,63 +1154,40 @@ namespace BenchmarkTreeBackends.Backends.QP
 
         // Encode in RFC 4034 canonical label-reversed order (TLD first).
         //
-        // Pass 1 — locate label boundaries:
-        //   Fast path: SIMD IndexOf('.') — one call per label, no per-char work.
-        //   Slow path: SkipChar loop — escape-aware, treats '\.' as literal.
+        // Single-pass strategy: encode labels left-to-right into key[], recording the
+        // output byte offset where each label starts in outStart[]. Then reverse the
+        // label order in-place using the reverse-all / reverse-each-segment identity:
         //
-        // Pass 2 — encode labels TLD-first with direct lookup (fast) or
-        //   DecodeChar (slow when backslashes are present).
+        //   [S0 | S1 | S2]  →reverse all→  [rev(S2)|rev(S1)|rev(S0)]
+        //                   →reverse each→  [S2 | S1 | S0]
         //
-        //  labelCount is bounds-checked before every write into lpos[] / lend[].
+        // This avoids the second full character pass that the prior two-pass approach
+        // required, and reduces the stack frame by one int[128] array (512 bytes).
+        // Span<byte>.Reverse() is BCL-vectorized on .NET 9.
+        //
+        // labelCount is bounds-checked before every write into outStart[].
         [SkipLocalsInit]
         private int EncodeWire(ReadOnlySpan<char> name, scoped Span<byte> key)
         {
-            Span<int> lpos = stackalloc int[MaxLabelCount + 1];
-            Span<int> lend = stackalloc int[MaxLabelCount + 1];
-            int labelCount = 0, i = 0;
+            // outStart[li]          = byte offset in key[] where label li begins.
+            // outStart[labelCount]  = total bytes written (sentinel for the reversal).
+            Span<int> outStart = stackalloc int[MaxLabelCount + 1];
+            int labelCount = 0;
+            int off = 0, i = 0;
 
             bool hasEscape = name.IndexOfAny(s_backslash) >= 0;
-
-            // Pass 1: label boundary discovery:
-            if (!hasEscape)
-            {
-                while (i < name.Length)
-                {
-                    //  enforce RFC 1035 §2.3.4 label limit before buffer write.
-                    if (labelCount >= MaxLabelCount) ThrowTooManyLabels();
-
-                    lpos[labelCount] = i;
-                    int dot = name[i..].IndexOf('.');
-                    if (dot < 0) { lend[labelCount++] = name.Length; break; }
-                    lend[labelCount++] = i + dot;
-                    i += dot + 1;
-                }
-            }
-            else
-            {
-                while (i < name.Length)
-                {
-                    if (labelCount >= MaxLabelCount) ThrowTooManyLabels();
-
-                    lpos[labelCount] = i;
-                    while (i < name.Length && name[i] != '.') SkipChar(name, ref i);
-                    lend[labelCount++] = i;
-                    if (i < name.Length) i++;
-                }
-            }
-
-            // Pass 2: encode labels TLD-first:
             byte[] table = _table;
-            int off = 0;
 
             if (!hasEscape)
             {
-                for (int li = labelCount - 1; li >= 0; li--)
+                while (i < name.Length)
                 {
-                    //  slice the label, run SIMD on whole 16-char
-                    // chunks, scalar loop covers the tail (< 16 chars or any chunk
-                    // with a split-producer).
-                    ReadOnlySpan<char> label = name.Slice(lpos[li], lend[li] - lpos[li]);
+                    if (labelCount >= MaxLabelCount) ThrowTooManyLabels();
+                    outStart[labelCount++] = off;
+
+                    int dot = name[i..].IndexOf('.');
+                    ReadOnlySpan<char> label = dot < 0 ? name[i..] : name.Slice(i, dot);
+
                     int j = SimdEncodeClean(label, key, ref off, !_caseSensitive);
                     for (; j < label.Length; j++)
                     {
@@ -1249,19 +1198,44 @@ namespace BenchmarkTreeBackends.Backends.QP
                         if (IsSplit(bit)) key[off++] = SplitLower(ch);
                     }
                     key[off++] = BNobyte;
+
+                    if (dot < 0) break;
+                    i += dot + 1;
                 }
             }
             else
             {
-                for (int li = labelCount - 1; li >= 0; li--)
+                while (i < name.Length)
                 {
-                    int j = lpos[li], end = lend[li];
-                    while (j < end) EmitByte(DecodeChar(name, ref j), table, key, ref off);
+                    if (labelCount >= MaxLabelCount) ThrowTooManyLabels();
+                    outStart[labelCount++] = off;
+
+                    // name[i] != '.' stops at an unescaped separator; DecodeChar advances
+                    // past escape sequences (including '\.') so they never trigger the check.
+                    while (i < name.Length && name[i] != '.')
+                        EmitByte(DecodeChar(name, ref i), table, key, ref off);
                     key[off++] = BNobyte;
+                    if (i < name.Length) i++; // skip separator '.'
                 }
             }
 
-            key[off] = BNobyte;
+            outStart[labelCount] = off; // sentinel: total bytes encoded
+
+            // In-place label reversal: reverse the full encoded range, then reverse each
+            // segment individually to restore correct internal byte order.
+            if (labelCount > 1)
+            {
+                key[..off].Reverse();
+                for (int li = 0; li < labelCount; li++)
+                {
+                    // After the whole-range reverse, segment li occupies the mirror position.
+                    int segStart = off - outStart[li + 1];
+                    int segEnd = off - outStart[li];
+                    key[segStart..segEnd].Reverse();
+                }
+            }
+
+            key[off] = BNobyte; // end-of-key terminator
             return off;
         }
 
@@ -1458,7 +1432,8 @@ namespace BenchmarkTreeBackends.Backends.QP
 
         /// <summary>
         /// Fully immutable leaf.
-        /// <see cref="EncodedKey"/> is stored to allow SIMD leaf verification and
+        /// <see cref="EncodedKey"/> is stored to allow SIMD leaf verification and 
+        /// cursor advancement without re-encoding.
         /// </summary>
         private sealed class LeafNode(string key, byte[] encodedKey, TValue value) : TrieNode
         {
@@ -1490,8 +1465,8 @@ namespace BenchmarkTreeBackends.Backends.QP
 
         [DoesNotReturn]
         private static void ThrowTooManyLabels() =>
-    throw new ArgumentException(
-        $"Domain name exceeds the RFC 1035 §2.3.4 limit of {MaxLabelCount} labels.");
+            throw new ArgumentException(
+                $"Domain name exceeds the RFC 1035 §2.3.4 limit of {MaxLabelCount} labels.");
 
         #endregion helpers
     }
