@@ -1121,6 +1121,9 @@ namespace BenchmarkTreeBackends.Backends.QP
         [SkipLocalsInit]
         private int EncodeText(ReadOnlySpan<char> name, scoped Span<byte> key)
         {
+            if (name.Length > 0 && name[0] == '.')
+                ThrowArgumentException("Domain name must not begin with a dot.");
+
             byte[] table = _table;
             int off = 0;
 
@@ -1169,6 +1172,9 @@ namespace BenchmarkTreeBackends.Backends.QP
         [SkipLocalsInit]
         private int EncodeWire(ReadOnlySpan<char> name, scoped Span<byte> key)
         {
+            if (name.Length > 0 && name[0] == '.')
+                ThrowArgumentException("Domain name must not begin with a dot.");
+
             Span<int> lpos = stackalloc int[MaxLabelCount];
             Span<int> lend = stackalloc int[MaxLabelCount];
             int labelCount = 0, i = 0;
@@ -1252,6 +1258,7 @@ namespace BenchmarkTreeBackends.Backends.QP
                 if (len == 0) break;
                 //  enforce label limit before buffer write.
                 if (labels >= MaxLabelCount) ThrowTooManyLabels();
+                if (len > 63) ThrowMalformedWireName();
                 if (p + 1 + len > wire.Length) ThrowMalformedWireName();
                 dope[labels++] = p;
                 p += 1 + len;
@@ -1489,6 +1496,10 @@ namespace BenchmarkTreeBackends.Backends.QP
         private static void ThrowMalformedWireName() =>
             throw new ArgumentException(
                 "Wire-format name is malformed: label length overruns the span or root terminator (0x00) is missing.");
+
+        [DoesNotReturn]
+        private static void ThrowArgumentException(string message) =>
+            throw new ArgumentException(message);
 
         #endregion helpers
     }
