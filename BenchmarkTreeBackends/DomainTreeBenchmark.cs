@@ -21,6 +21,7 @@ namespace BenchmarkTreeBackends
         private MmapBackedDomainTree<string> _mmapBackedTree;
         private MmapBackedDomainTree<string> _mmapBackedTree2;
         private DnsTrie<string> _dnsTrie;
+        private DnsTrie<string> _dnsTrieWireFormat;
 
         private const int N = 10_000_000;
 
@@ -56,6 +57,7 @@ namespace BenchmarkTreeBackends
             _mmapBackedTree = new MmapBackedDomainTree<string>("treetest_mmap", new MessagePackCodec<string>());
             _mmapBackedTree2 = new MmapBackedDomainTree<string>("treetest_mmap2", new Utf8StringCodec());
             _dnsTrie = new DnsTrie<string>();
+            _dnsTrieWireFormat = new DnsTrie<string>(wireFormat: true);
 
             SeedDict(_concurrentDict);
             Seed(_defaultTree);
@@ -64,6 +66,7 @@ namespace BenchmarkTreeBackends
             Seed(_mmapBackedTree);
             Seed(_mmapBackedTree2);
             SeedTrie(_dnsTrie);
+            SeedTrie(_dnsTrieWireFormat);
         }
 
         [GlobalCleanup]
@@ -200,6 +203,14 @@ namespace BenchmarkTreeBackends
         {
             for (int i = 0; i < N; i++)
                 _dnsTrie.TryGet(TestDomains[i % TestDomains.Length], out _);
+        }
+
+        [Benchmark]
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        public void DnsTrieWireFormat()
+        {
+            for (int i = 0; i < N; i++)
+                _dnsTrieWireFormat.TryGet(TestDomains[i % TestDomains.Length], out _);
         }
     }
 }
