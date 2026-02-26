@@ -220,15 +220,15 @@ namespace BenchmarkTreeBackends.Backends.QP
         {
             ArgumentNullException.ThrowIfNull(items);
 
-            var trie = new DnsTrie<TValue>(caseSensitive, wireFormat);
-            var list = new List<BulkEntry>(capacity: 1024);
+            DnsTrie<TValue> trie = new DnsTrie<TValue>(caseSensitive, wireFormat);
+            List<BulkEntry> list = new List<BulkEntry>(capacity: 1024);
 
             // Hoisted above the loop; the buffer is fully overwritten before AllocKey reads it.
             // frame slot is reused on every iteration rather than growing the stack
             // by KeyCapacity bytes per entry.
             Span<byte> keyBuf = stackalloc byte[KeyCapacity];
 
-            foreach (var (name, value) in items)
+            foreach ((string name, TValue value) in items)
             {
                 if (name is null) throw new ArgumentException("Item name must not be null.", nameof(items));
 
@@ -304,8 +304,8 @@ namespace BenchmarkTreeBackends.Backends.QP
             // sort + bulk-build and preserves zero call-site heap allocation.
             if (items.Length <= DirectInsertThreshold)
             {
-                var trie = new DnsTrie<TValue>(caseSensitive, wireFormat);
-                foreach (var (name, value) in items)
+                DnsTrie<TValue> trie = new DnsTrie<TValue>(caseSensitive, wireFormat);
+                foreach ((string name, TValue value) in items)
                 {
                     if (name is null) throw new ArgumentException("Item name must not be null.", nameof(items));
                     trie.Set(name, value);
@@ -316,8 +316,8 @@ namespace BenchmarkTreeBackends.Backends.QP
             // For larger sets, fall through to the sorted bulk path.
             // The span must be materialised before calling the IEnumerable overload
             // because the span is only valid for this call frame.
-            var list = new List<(string, TValue)>(items.Length);
-            foreach (var item in items) list.Add(item);
+            List<(string, TValue)> list = new List<(string, TValue)>(items.Length);
+            foreach ((string Name, TValue Value) item in items) list.Add(item);
             return BuildBulk((IEnumerable<(string, TValue)>)list, caseSensitive, wireFormat);
         }
 
@@ -390,13 +390,13 @@ namespace BenchmarkTreeBackends.Backends.QP
             TrieNode? root = _root;
             if (root is null) return new TrieStats(0, 0, 0);
 
-            var stack = new Stack<(TrieNode Node, int Depth)>(64);
+            Stack<(TrieNode Node, int Depth)> stack = new Stack<(TrieNode Node, int Depth)>(64);
             stack.Push((root, 0));
             int nodes = 0, leaves = 0, maxDepth = 0;
 
             while (stack.Count > 0)
             {
-                var (cur, depth) = stack.Pop();
+                (TrieNode cur, int depth) = stack.Pop();
                 nodes++;
                 if (depth > maxDepth) maxDepth = depth;
 
@@ -471,7 +471,7 @@ namespace BenchmarkTreeBackends.Backends.QP
                 n = state.Twigs[TwigOffset(state, bit)];
             }
 
-            var leaf = (LeafNode)n;
+            LeafNode leaf = (LeafNode)n;
             if (!KeysEqual(leaf.EncodedKey, keySpan)) { value = default!; return false; }
             value = leaf.Value;
             return true;
@@ -499,7 +499,7 @@ namespace BenchmarkTreeBackends.Backends.QP
                 n = state.Twigs[TwigOffset(state, bit)];
             }
 
-            var leaf = (LeafNode)n;
+            LeafNode leaf = (LeafNode)n;
             if (!KeysEqual(leaf.EncodedKey, keySpan)) { value = default!; return false; }
             value = leaf.Value;
             return true;
@@ -548,7 +548,7 @@ namespace BenchmarkTreeBackends.Backends.QP
             // queryLen+1 bytes from nearKey (the virtual terminator beyond nearKey.Length
             // is BNobyte; when nearKey is shorter we pass it as-is and CommonPrefixLength
             // reports the mismatch at nearKey.Length, which is ≤ queryLen).
-            var nearLeaf = (LeafNode)n;
+            LeafNode nearLeaf = (LeafNode)n;
             ReadOnlySpan<byte> nearKey = nearLeaf.EncodedKey;
             int diffOff = queryKey[..Math.Min(queryLen + 1, KeyCapacity)].CommonPrefixLength(
                               nearKey.Length > queryLen
@@ -614,13 +614,13 @@ namespace BenchmarkTreeBackends.Backends.QP
         {
             if (end - start == 1)
             {
-                var x = list[start];
+                BulkEntry x = list[start];
                 return new LeafNode(x.Name, x.EncodedKey, x.Value);
             }
 
             int splitOff = FindSplitOffset(list, start, end, depth);
             ulong bitmap = 0;
-            var children = new List<TrieNode>(capacity: 8);
+            List<TrieNode> children = new List<TrieNode>(capacity: 8);
 
             int i = start;
             while (i < end)
@@ -638,7 +638,7 @@ namespace BenchmarkTreeBackends.Backends.QP
 
         private static byte[] BuildTable(bool caseInsensitive)
         {
-            var t = new byte[256];
+            byte[] t = new byte[256];
             for (int b = 0; b < 256; b++)
             {
                 t[b] = b switch
@@ -683,10 +683,12 @@ namespace BenchmarkTreeBackends.Backends.QP
             {
                 byte len = wire[p++];
                 if (len == 0) break;
+                if (p + len > wire.Length) ThrowMalformedWireName();
                 totalChars += len;
                 labelCount++;
                 p += len;
             }
+            if (wire.Length == 0 || wire[p - 1] != 0) ThrowMalformedWireName(); // missing root terminator
             if (labelCount == 0) return ".";
             if (labelCount > 1) totalChars += labelCount - 1; // dots between labels
 
@@ -718,7 +720,7 @@ namespace BenchmarkTreeBackends.Backends.QP
         private static TrieNode[] CloneWithInsertion(BranchState state, int s, TrieNode inserted)
         {
             int m = state.Twigs.Length;
-            var twigs = new TrieNode[m + 1];
+            TrieNode[] twigs = new TrieNode[m + 1];
             Array.Copy(state.Twigs, 0, twigs, 0, s);
             twigs[s] = inserted;
             Array.Copy(state.Twigs, s, twigs, s + 1, m - s);
@@ -728,7 +730,7 @@ namespace BenchmarkTreeBackends.Backends.QP
         private static TrieNode[] CloneWithRemoval(BranchState state, int s)
         {
             int m = state.Twigs.Length - 1;
-            var twigs = new TrieNode[m];
+            TrieNode[] twigs = new TrieNode[m];
             Array.Copy(state.Twigs, 0, twigs, 0, s);
             Array.Copy(state.Twigs, s + 1, twigs, s, m - s);
             return twigs;
@@ -736,7 +738,7 @@ namespace BenchmarkTreeBackends.Backends.QP
 
         private static TrieNode[] CloneWithReplacement(BranchState state, int s, TrieNode repl)
         {
-            var twigs = (TrieNode[])state.Twigs.Clone();
+            TrieNode[] twigs = (TrieNode[])state.Twigs.Clone();
             twigs[s] = repl;
             return twigs;
         }
@@ -874,15 +876,15 @@ namespace BenchmarkTreeBackends.Backends.QP
             ref byte dest = ref MemoryMarshal.GetReference(key);
 
             // Constant vectors — JIT hoists these out of the loop as XMM constants.
-            var vAUp = Vector128.Create((byte)'A');   // 0x41  uppercase fold lower bound
-            var vZUp = Vector128.Create((byte)'Z');   // 0x5A  uppercase fold upper bound
-            var v0x20 = Vector128.Create((byte)0x20);  // ASCII lowercase bit
-            var vLo = Vector128.Create((byte)0x2D);  // clean low  group start: '-'
-            var vLoHi = Vector128.Create((byte)0x39);  // clean low  group end:   '9'
-            var vHiLo = Vector128.Create((byte)0x5F);  // clean high group start: '_'
-            var vHiHi = Vector128.Create((byte)0x7A);  // clean high group end:   'z'
-            var v40 = Vector128.Create((byte)40);    // subtract for low  group
-            var v75 = Vector128.Create((byte)75);    // subtract for high group
+            Vector128<byte> vAUp = Vector128.Create((byte)'A');   // 0x41  uppercase fold lower bound
+            Vector128<byte> vZUp = Vector128.Create((byte)'Z');   // 0x5A  uppercase fold upper bound
+            Vector128<byte> v0x20 = Vector128.Create((byte)0x20);  // ASCII lowercase bit
+            Vector128<byte> vLo = Vector128.Create((byte)0x2D);  // clean low  group start: '-'
+            Vector128<byte> vLoHi = Vector128.Create((byte)0x39);  // clean low  group end:   '9'
+            Vector128<byte> vHiLo = Vector128.Create((byte)0x5F);  // clean high group start: '_'
+            Vector128<byte> vHiHi = Vector128.Create((byte)0x7A);  // clean high group end:   'z'
+            Vector128<byte> v40 = Vector128.Create((byte)40);    // subtract for low  group
+            Vector128<byte> v75 = Vector128.Create((byte)75);    // subtract for high group
 
             int i = 0;
             while (i + 16 <= chars.Length)
@@ -895,9 +897,9 @@ namespace BenchmarkTreeBackends.Backends.QP
                 if (off + 16 > key.Length) break;
 
                 // Load 16 UTF-16 chars as two vectors of 8 ushorts each.
-                var lo = Vector128.LoadUnsafe(
+                Vector128<ushort> lo = Vector128.LoadUnsafe(
                     ref Unsafe.As<char, ushort>(ref Unsafe.Add(ref src, i)));
-                var hi = Vector128.LoadUnsafe(
+                Vector128<ushort> hi = Vector128.LoadUnsafe(
                     ref Unsafe.As<char, ushort>(ref Unsafe.Add(ref src, i + 8)));
 
                 // Non-ASCII check: OR both vectors, shift away the low byte; any
@@ -909,21 +911,21 @@ namespace BenchmarkTreeBackends.Backends.QP
 
                 // Narrow ushort→byte (safe: high bytes verified zero above).
                 // lower 8 chars → first 8 lanes; upper 8 chars → last 8 lanes.
-                var narrow = Vector128.Narrow(lo, hi);
+                Vector128<byte> narrow = Vector128.Narrow(lo, hi);
 
                 // Fold A–Z → a–z for case-insensitive mode.
                 if (caseInsensitive)
                 {
-                    var isUpper = Vector128.GreaterThanOrEqual(narrow, vAUp)
+                    Vector128<byte> isUpper = Vector128.GreaterThanOrEqual(narrow, vAUp)
                                 & Vector128.LessThanOrEqual(narrow, vZUp);
                     narrow |= isUpper & v0x20;
                 }
 
                 // Clean check: every lane must be in [0x2D,0x39] or [0x5F,0x7A].
                 // inLow / inHigh are 0xFF per lane when true, 0x00 when false.
-                var inLow = Vector128.GreaterThanOrEqual(narrow, vLo)
+                Vector128<byte> inLow = Vector128.GreaterThanOrEqual(narrow, vLo)
                            & Vector128.LessThanOrEqual(narrow, vLoHi);
-                var inHigh = Vector128.GreaterThanOrEqual(narrow, vHiLo)
+                Vector128<byte> inHigh = Vector128.GreaterThanOrEqual(narrow, vHiLo)
                            & Vector128.LessThanOrEqual(narrow, vHiHi);
 
                 if (!Vector128.EqualsAll(inLow | inHigh, Vector128<byte>.AllBitsSet))
@@ -932,7 +934,7 @@ namespace BenchmarkTreeBackends.Backends.QP
                 // Arithmetic encoding — no table load, no branch:
                 //   inHigh lane 0xFF → choose (narrow − 75)
                 //   inHigh lane 0x00 → choose (narrow − 40)
-                var result = Vector128.ConditionalSelect(inHigh, narrow - v75, narrow - v40);
+                Vector128<byte> result = Vector128.ConditionalSelect(inHigh, narrow - v75, narrow - v40);
 
                 result.StoreUnsafe(ref Unsafe.Add(ref dest, off));
                 off += 16;
@@ -957,16 +959,16 @@ namespace BenchmarkTreeBackends.Backends.QP
             ref byte src = ref MemoryMarshal.GetReference(bytes);
             ref byte dest = ref MemoryMarshal.GetReference(key);
 
-            var vAUp = Vector128.Create((byte)'A');
-            var vZUp = Vector128.Create((byte)'Z');
-            var v0x20 = Vector128.Create((byte)0x20);
-            var v80 = Vector128.Create((byte)0x80);  // non-ASCII sentinel
-            var vLo = Vector128.Create((byte)0x2D);
-            var vLoHi = Vector128.Create((byte)0x39);
-            var vHiLo = Vector128.Create((byte)0x5F);
-            var vHiHi = Vector128.Create((byte)0x7A);
-            var v40 = Vector128.Create((byte)40);
-            var v75 = Vector128.Create((byte)75);
+            Vector128<byte> vAUp = Vector128.Create((byte)'A');
+            Vector128<byte> vZUp = Vector128.Create((byte)'Z');
+            Vector128<byte> v0x20 = Vector128.Create((byte)0x20);
+            Vector128<byte> v80 = Vector128.Create((byte)0x80);  // non-ASCII sentinel
+            Vector128<byte> vLo = Vector128.Create((byte)0x2D);
+            Vector128<byte> vLoHi = Vector128.Create((byte)0x39);
+            Vector128<byte> vHiLo = Vector128.Create((byte)0x5F);
+            Vector128<byte> vHiHi = Vector128.Create((byte)0x7A);
+            Vector128<byte> v40 = Vector128.Create((byte)40);
+            Vector128<byte> v75 = Vector128.Create((byte)75);
 
             int i = 0;
             while (i + 16 <= bytes.Length)
@@ -974,7 +976,7 @@ namespace BenchmarkTreeBackends.Backends.QP
                 // Destination bounds guard — see SimdEncodeClean for rationale.
                 if (off + 16 > key.Length) break;
 
-                var narrow = Vector128.LoadUnsafe(ref Unsafe.Add(ref src, i));
+                Vector128<byte> narrow = Vector128.LoadUnsafe(ref Unsafe.Add(ref src, i));
 
                 // Reject non-ASCII bytes (≥ 0x80): they produce split outputs.
                 if (!Vector128.EqualsAll(
@@ -984,20 +986,20 @@ namespace BenchmarkTreeBackends.Backends.QP
 
                 if (caseInsensitive)
                 {
-                    var isUpper = Vector128.GreaterThanOrEqual(narrow, vAUp)
+                    Vector128<byte> isUpper = Vector128.GreaterThanOrEqual(narrow, vAUp)
                                 & Vector128.LessThanOrEqual(narrow, vZUp);
                     narrow |= isUpper & v0x20;
                 }
 
-                var inLow = Vector128.GreaterThanOrEqual(narrow, vLo)
+                Vector128<byte> inLow = Vector128.GreaterThanOrEqual(narrow, vLo)
                            & Vector128.LessThanOrEqual(narrow, vLoHi);
-                var inHigh = Vector128.GreaterThanOrEqual(narrow, vHiLo)
+                Vector128<byte> inHigh = Vector128.GreaterThanOrEqual(narrow, vHiLo)
                            & Vector128.LessThanOrEqual(narrow, vHiHi);
 
                 if (!Vector128.EqualsAll(inLow | inHigh, Vector128<byte>.AllBitsSet))
                     break;
 
-                var result = Vector128.ConditionalSelect(inHigh, narrow - v75, narrow - v40);
+                Vector128<byte> result = Vector128.ConditionalSelect(inHigh, narrow - v75, narrow - v40);
 
                 result.StoreUnsafe(ref Unsafe.Add(ref dest, off));
                 off += 16;
@@ -1056,7 +1058,7 @@ namespace BenchmarkTreeBackends.Backends.QP
                     n = state.Twigs[TwigOffset(state, bit)];
                 }
 
-                var leaf = (LeafNode)n;
+                LeafNode leaf = (LeafNode)n;
                 if (!KeysEqual(leaf.EncodedKey, keySpan))
                 { foundKey = default!; foundValue = default!; return false; }
 
@@ -1095,7 +1097,7 @@ namespace BenchmarkTreeBackends.Backends.QP
 
                 // Case 3: shrink — parent had 3+ children.
                 {
-                    var next = new BranchState(
+                    BranchState next = new BranchState(
                         parentState!.Bitmap & ~(1UL << parentBit),
                         CloneWithRemoval(parentState!, deletedSlot));
                     if (CasState(parent, next, expected: parentState!))
@@ -1152,40 +1154,61 @@ namespace BenchmarkTreeBackends.Backends.QP
 
         // Encode in RFC 4034 canonical label-reversed order (TLD first).
         //
-        // Single-pass strategy: encode labels left-to-right into key[], recording the
-        // output byte offset where each label starts in outStart[]. Then reverse the
-        // label order in-place using the reverse-all / reverse-each-segment identity:
+        // Pass 1: scan for unescaped dots via SIMD IndexOf('.'), storing each label's
+        //         absolute source start (lpos) and end (lend) in name.
+        //         labelCount is bounds-checked before every write into lpos[]/lend[].
         //
-        //   [S0 | S1 | S2]  →reverse all→  [rev(S2)|rev(S1)|rev(S0)]
-        //                   →reverse each→  [S2 | S1 | S0]
+        // Pass 2: encode labels TLD-first (lpos[labelCount-1]..lend[labelCount-1], then
+        //         lpos[labelCount-2]..lend[labelCount-2], etc.) using the same
+        //         SimdEncodeClean + scalar tail as EncodeText.
         //
-        // This avoids the second full character pass that the prior two-pass approach
-        // required, and reduces the stack frame by one int[128] array (512 bytes).
-        // Span<byte>.Reverse() is BCL-vectorized on .NET 9.
+        // Escape path (rare): the slow SkipChar loop advances i safely past \DDD and \X
+        //         sequences so that unescaped '.' remains the sole label separator.
         //
-        // labelCount is bounds-checked before every write into outStart[].
+        // labelCount is bounds-checked before every write into lpos[]/lend[].
         [SkipLocalsInit]
         private int EncodeWire(ReadOnlySpan<char> name, scoped Span<byte> key)
         {
-            // outStart[li]          = byte offset in key[] where label li begins.
-            // outStart[labelCount]  = total bytes written (sentinel for the reversal).
-            Span<int> outStart = stackalloc int[MaxLabelCount + 1];
-            int labelCount = 0;
-            int off = 0, i = 0;
+            Span<int> lpos = stackalloc int[MaxLabelCount];
+            Span<int> lend = stackalloc int[MaxLabelCount];
+            int labelCount = 0, i = 0;
 
             bool hasEscape = name.IndexOfAny(s_backslash) >= 0;
-            byte[] table = _table;
 
+            // Pass 1: label boundary discovery.
             if (!hasEscape)
             {
                 while (i < name.Length)
                 {
                     if (labelCount >= MaxLabelCount) ThrowTooManyLabels();
-                    outStart[labelCount++] = off;
-
+                    lpos[labelCount] = i;
                     int dot = name[i..].IndexOf('.');
-                    ReadOnlySpan<char> label = dot < 0 ? name[i..] : name.Slice(i, dot);
+                    if (dot < 0) { lend[labelCount++] = name.Length; break; }
+                    lend[labelCount++] = i + dot;
+                    i += dot + 1;
+                }
+            }
+            else
+            {
+                while (i < name.Length)
+                {
+                    if (labelCount >= MaxLabelCount) ThrowTooManyLabels();
+                    lpos[labelCount] = i;
+                    while (i < name.Length && name[i] != '.') SkipChar(name, ref i);
+                    lend[labelCount++] = i;
+                    if (i < name.Length) i++;
+                }
+            }
 
+            // Pass 2: encode labels TLD-first.
+            byte[] table = _table;
+            int off = 0;
+
+            if (!hasEscape)
+            {
+                for (int li = labelCount - 1; li >= 0; li--)
+                {
+                    ReadOnlySpan<char> label = name.Slice(lpos[li], lend[li] - lpos[li]);
                     int j = SimdEncodeClean(label, key, ref off, !_caseSensitive);
                     for (; j < label.Length; j++)
                     {
@@ -1196,44 +1219,19 @@ namespace BenchmarkTreeBackends.Backends.QP
                         if (IsSplit(bit)) key[off++] = SplitLower(ch);
                     }
                     key[off++] = BNobyte;
-
-                    if (dot < 0) break;
-                    i += dot + 1;
                 }
             }
             else
             {
-                while (i < name.Length)
+                for (int li = labelCount - 1; li >= 0; li--)
                 {
-                    if (labelCount >= MaxLabelCount) ThrowTooManyLabels();
-                    outStart[labelCount++] = off;
-
-                    // name[i] != '.' stops at an unescaped separator; DecodeChar advances
-                    // past escape sequences (including '\.') so they never trigger the check.
-                    while (i < name.Length && name[i] != '.')
-                        EmitByte(DecodeChar(name, ref i), table, key, ref off);
+                    int j = lpos[li], end = lend[li];
+                    while (j < end) EmitByte(DecodeChar(name, ref j), table, key, ref off);
                     key[off++] = BNobyte;
-                    if (i < name.Length) i++; // skip separator '.'
                 }
             }
 
-            outStart[labelCount] = off; // sentinel: total bytes encoded
-
-            // In-place label reversal: reverse the full encoded range, then reverse each
-            // segment individually to restore correct internal byte order.
-            if (labelCount > 1)
-            {
-                key[..off].Reverse();
-                for (int li = 0; li < labelCount; li++)
-                {
-                    // After the whole-range reverse, segment li occupies the mirror position.
-                    int segStart = off - outStart[li + 1];
-                    int segEnd = off - outStart[li];
-                    key[segStart..segEnd].Reverse();
-                }
-            }
-
-            key[off] = BNobyte; // end-of-key terminator
+            key[off] = BNobyte;
             return off;
         }
 
@@ -1254,9 +1252,11 @@ namespace BenchmarkTreeBackends.Backends.QP
                 if (len == 0) break;
                 //  enforce label limit before buffer write.
                 if (labels >= MaxLabelCount) ThrowTooManyLabels();
+                if (p + 1 + len > wire.Length) ThrowMalformedWireName();
                 dope[labels++] = p;
                 p += 1 + len;
             }
+            if (p >= wire.Length) ThrowMalformedWireName(); // missing root terminator
 
             byte[] table = _table;
             int off = 0;
@@ -1316,13 +1316,13 @@ namespace BenchmarkTreeBackends.Backends.QP
                     n = st.Twigs[NearTwig(st, bit)];
                 }
 
-                var nearLeaf = (LeafNode)n;
+                LeafNode nearLeaf = (LeafNode)n;
                 int diffOff = FirstDiffOffset(newKeySpan, nearLeaf.EncodedKey);
 
                 // Identical key: single-descent value update:
                 if (diffOff < 0)
                 {
-                    var newLeaf = new LeafNode(storedKey, AllocKey(newKeySpan), value);
+                    LeafNode newLeaf = new LeafNode(storedKey, AllocKey(newKeySpan), value);
                     bool ok;
                     if (nearParent is null)
                     {
@@ -1332,7 +1332,7 @@ namespace BenchmarkTreeBackends.Backends.QP
                     else
                     {
                         int s = TwigOffset(nearParentState!, nearParentBit);
-                        var next = new BranchState(nearParentState!.Bitmap,
+                        BranchState next = new BranchState(nearParentState!.Bitmap,
                                                    CloneWithReplacement(nearParentState!, s, newLeaf));
                         ok = CasState(nearParent, next, expected: nearParentState!);
                     }
@@ -1345,7 +1345,7 @@ namespace BenchmarkTreeBackends.Backends.QP
                 byte oldBit = (uint)diffOff < (uint)nearLeaf.EncodedKey.Length
                                 ? nearLeaf.EncodedKey[diffOff]
                                 : BNobyte;
-                var insert = new LeafNode(storedKey, AllocKey(newKeySpan), value);
+                LeafNode insert = new LeafNode(storedKey, AllocKey(newKeySpan), value);
 
                 // Pass 2: locate structural insertion point:
                 BranchNode? parent = null;
@@ -1363,7 +1363,7 @@ namespace BenchmarkTreeBackends.Backends.QP
                         // If newBit is already present, a concurrent insert raced us; restart.
                         if (HasTwig(state, newBit)) break;
 
-                        var grown = new BranchState(
+                        BranchState grown = new BranchState(
                             state.Bitmap | 1UL << newBit,
                             CloneWithInsertion(state, TwigOffset(state, newBit), insert));
 
@@ -1391,8 +1391,8 @@ namespace BenchmarkTreeBackends.Backends.QP
                         ? [insert, n]
                         : [n, insert];
 
-                    var newSt = new BranchState(bitmap, newTwigs);
-                    var newBr = new BranchNode(diffOff, newSt);
+                    BranchState newSt = new BranchState(bitmap, newTwigs);
+                    BranchNode newBr = new BranchNode(diffOff, newSt);
 
                     bool ok = parent is null
                         ? CasRoot(newBr, expected: root)
@@ -1405,6 +1405,25 @@ namespace BenchmarkTreeBackends.Backends.QP
                     if (ok) { Interlocked.Increment(ref _count); return true; }
                 }
             }
+        }
+
+        // RFC 1035 §5.1 character skipper — advance i past one escaped character.
+        // Used only by EncodeWire's escape-aware Pass 1 to locate unescaped dots.
+        // The inner `else i++` prevents an infinite loop on malformed \D input.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void SkipChar(ReadOnlySpan<char> name, ref int i)
+        {
+            if (name[i++] != '\\' || i >= name.Length) return;
+            if (name[i] >= '0' && name[i] <= '9')
+            {
+                if (i + 2 < name.Length
+                    && name[i + 1] >= '0' && name[i + 1] <= '9'
+                    && name[i + 2] >= '0' && name[i + 2] <= '9')
+                    i += 3;
+                else
+                    i++;
+            }
+            else { i++; }
         }
 
         #endregion private
@@ -1465,6 +1484,11 @@ namespace BenchmarkTreeBackends.Backends.QP
         private static void ThrowTooManyLabels() =>
             throw new ArgumentException(
                 $"Domain name exceeds the RFC 1035 §2.3.4 limit of {MaxLabelCount} labels.");
+
+        [DoesNotReturn]
+        private static void ThrowMalformedWireName() =>
+            throw new ArgumentException(
+                "Wire-format name is malformed: label length overruns the span or root terminator (0x00) is missing.");
 
         #endregion helpers
     }
