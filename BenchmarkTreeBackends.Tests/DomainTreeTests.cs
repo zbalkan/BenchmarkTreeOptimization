@@ -11,20 +11,10 @@ namespace BenchmarkTreeBackends.Tests;
 [TestClass]
 public class DomainTreeTests
 {
-    private DomainTree<string> _defaultTree;
     private DatabaseBackedDomainTree<string> _databaseBackedTree;
-    private MmapBackedDomainTree<string> _mmapBackedTree;
+    private DomainTree<string> _defaultTree;
     private DnsTrie<string> _dnsTrie;
-
-    [TestInitialize]
-    public void Setup()
-    {
-        _defaultTree = new DomainTree<string>();
-        _databaseBackedTree = new DatabaseBackedDomainTree<string>("treetest", new MessagePackCodec<string>());
-        _mmapBackedTree = new MmapBackedDomainTree<string>("treetest_mmap", new MessagePackCodec<string>());
-        _dnsTrie = new DnsTrie<string>();
-    }
-
+    private MmapBackedDomainTree<string> _mmapBackedTree;
     [TestCleanup]
     public void Cleanup()
     {
@@ -39,6 +29,101 @@ public class DomainTreeTests
         {
             System.IO.File.Delete("treetest_mmap");
         }
+    }
+
+    [TestMethod]
+    public void Parity_DeepHierarchy_Cleanup()
+    {
+        string deep = "very.deep.sub.domain.structure.com";
+        _defaultTree.Add(deep, "test");
+        _databaseBackedTree.Add(deep, "test");
+        _mmapBackedTree.Add(deep, "test");
+        _dnsTrie.Set(deep, "test");
+
+        _defaultTree.TryRemove(deep, out _);
+        _databaseBackedTree.TryRemove(deep, out _);
+        _mmapBackedTree.TryRemove(deep, out _);
+        _dnsTrie.Delete(deep);
+
+        // This ensures CleanThisBranch works identically in both
+        Assert.IsTrue(_defaultTree.IsEmpty, "Default tree failed to clean branch");
+        Assert.IsTrue(_databaseBackedTree.IsEmpty, "Lmdb-backed tree failed to clean branch");
+        Assert.IsTrue(_mmapBackedTree.IsEmpty, "Mmap-backed tree failed to clean branch");
+        Assert.AreEqual(0, _dnsTrie.Count, "DnsTrie failed to clean branch");
+    }
+
+    [TestMethod]
+    public void Parity_EmptyDomain_BothAccept()
+    {
+        bool addedBaseline = _defaultTree.TryAdd(string.Empty, string.Empty);
+        bool addedLmdb = _databaseBackedTree.TryAdd(string.Empty, string.Empty);
+        bool addedMmap = _mmapBackedTree.TryAdd(string.Empty, string.Empty);
+        bool addedDnsTrie = _dnsTrie.Set(string.Empty, string.Empty);
+        Assert.AreEqual(addedBaseline, addedLmdb, $"TryAdd mismatch for: empty key-value for LMDB backend.");
+        Assert.AreEqual(addedBaseline, addedMmap, $"TryAdd mismatch for: empty key-value for MMAP backend");
+        Assert.AreEqual(addedBaseline, addedDnsTrie, $"TryAdd mismatch for: empty key-value for DnsTrie backend");
+    }
+
+    [TestMethod]
+    [DataRow("domain..com", "label length")]
+    [DataRow(".prefix.com", "label length")]
+    [DataRow("suffix.com.", "label length")]
+    [DataRow("-prefix.com", "hyphen")]
+    [DataRow("suffix-.com", "hyphen")]
+    [DataRow("this-label-is-exactly-sixty-four-characters-long-and-should-fail.com", "63 bytes")]
+    public void Parity_InvalidDomains_BothThrow(string domain, string expectedReason)
+    {
+        // Default Tree
+        var exBaseline = Assert.ThrowsExactly<InvalidDomainNameException>(() =>
+            _defaultTree.ConvertToByteKey(domain, true), $"Default should fail: {expectedReason}");
+
+        // Lmdb-backed Tree
+        var exLmdb = Assert.ThrowsExactly<InvalidDomainNameException>(() =>
+            _databaseBackedTree.ConvertToByteKey(domain, true), $"Lmdb-backed should fail: {expectedReason}");
+        // MMAP-backed Tree
+        var exMmap = Assert.ThrowsExactly<InvalidDomainNameException>(() =>
+            _mmapBackedTree.ConvertToByteKey(domain, true), $"Mmap-backed should fail: {expectedReason}");
+
+        // Ensure all caught the same logical error
+        Assert.IsNotNull(exBaseline);
+        Assert.IsNotNull(exLmdb);
+        Assert.IsNotNull(exMmap);
+    }
+
+    [TestMethod]
+    [DataRow(null, "null")]
+    public void Parity_NullDomain_BothFailSilently(string domain, string expectedReason)
+    {
+        // Default Tree
+        var exBaseline = _defaultTree.ConvertToByteKey(domain, false);
+        // Lmdb-backed Tree
+        var exLmdb = _databaseBackedTree.ConvertToByteKey(domain, false);
+        // MMAP-backed Tree
+        var exMmap = _mmapBackedTree.ConvertToByteKey(domain, false);
+
+        // Ensure all caught the same logical error
+        Assert.IsNull(exBaseline);
+        Assert.IsNull(exLmdb);
+        Assert.IsNull(exMmap);
+    }
+
+    [TestMethod]
+    [DataRow(null)]
+    public void Parity_NullDomain_BothThrow(string domain)
+    {
+        // Default Tree
+        var exBaseline = Assert.ThrowsExactly<ArgumentNullException>(() =>
+            _defaultTree.ConvertToByteKey(domain, true), "Default should fail");
+        // Lmdb-backed Tree
+        var exLmdb = Assert.ThrowsExactly<ArgumentNullException>(() =>
+            _databaseBackedTree.ConvertToByteKey(domain, true), "Lmdb-backed should fail");
+        // MMAP-backed Tree
+        var exMmap = Assert.ThrowsExactly<ArgumentNullException>(() =>
+            _mmapBackedTree.ConvertToByteKey(domain, true), "Mmap-backed should fail");
+
+        Assert.IsNotNull(exBaseline);
+        Assert.IsNotNull(exLmdb);
+        Assert.IsNotNull(exMmap);
     }
 
     [TestMethod]
@@ -85,98 +170,12 @@ public class DomainTreeTests
         Assert.AreEqual(removedBaseline, removedDnsTrie, $"TryRemove mismatch for: {domain}");
     }
 
-    [TestMethod]
-    public void Parity_EmptyDomain_BothAccept()
+    [TestInitialize]
+    public void Setup()
     {
-        bool addedBaseline = _defaultTree.TryAdd(string.Empty, string.Empty);
-        bool addedLmdb = _databaseBackedTree.TryAdd(string.Empty, string.Empty);
-        bool addedMmap = _mmapBackedTree.TryAdd(string.Empty, string.Empty);
-        bool addedDnsTrie = _dnsTrie.Set(string.Empty, string.Empty);
-        Assert.AreEqual(addedBaseline, addedLmdb, $"TryAdd mismatch for: empty key-value for LMDB backend.");
-        Assert.AreEqual(addedBaseline, addedMmap, $"TryAdd mismatch for: empty key-value for MMAP backend");
-        Assert.AreEqual(addedBaseline, addedDnsTrie, $"TryAdd mismatch for: empty key-value for DnsTrie backend");
-    }
-
-    [TestMethod]
-    [DataRow(null)]
-    public void Parity_NullDomain_BothThrow(string domain)
-    {
-        // Default Tree
-        var exBaseline = Assert.ThrowsExactly<ArgumentNullException>(() =>
-            _defaultTree.ConvertToByteKey(domain, true), "Default should fail");
-        // Lmdb-backed Tree
-        var exLmdb = Assert.ThrowsExactly<ArgumentNullException>(() =>
-            _databaseBackedTree.ConvertToByteKey(domain, true), "Lmdb-backed should fail");
-        // MMAP-backed Tree
-        var exMmap = Assert.ThrowsExactly<ArgumentNullException>(() =>
-            _mmapBackedTree.ConvertToByteKey(domain, true), "Mmap-backed should fail");
-
-        Assert.IsNotNull(exBaseline);
-        Assert.IsNotNull(exLmdb);
-        Assert.IsNotNull(exMmap);
-    }
-
-    [TestMethod]
-    [DataRow(null, "null")]
-    public void Parity_NullDomain_BothFailSilently(string domain, string expectedReason)
-    {
-        // Default Tree
-        var exBaseline = _defaultTree.ConvertToByteKey(domain, false);
-        // Lmdb-backed Tree
-        var exLmdb = _databaseBackedTree.ConvertToByteKey(domain, false);
-        // MMAP-backed Tree
-        var exMmap = _mmapBackedTree.ConvertToByteKey(domain, false);
-
-        // Ensure all caught the same logical error
-        Assert.IsNull(exBaseline);
-        Assert.IsNull(exLmdb);
-        Assert.IsNull(exMmap);
-    }
-
-    [TestMethod]
-    [DataRow("domain..com", "label length")]
-    [DataRow(".prefix.com", "label length")]
-    [DataRow("suffix.com.", "label length")]
-    [DataRow("-prefix.com", "hyphen")]
-    [DataRow("suffix-.com", "hyphen")]
-    [DataRow("this-label-is-exactly-sixty-four-characters-long-and-should-fail.com", "63 bytes")]
-    public void Parity_InvalidDomains_BothThrow(string domain, string expectedReason)
-    {
-        // Default Tree
-        var exBaseline = Assert.ThrowsExactly<InvalidDomainNameException>(() =>
-            _defaultTree.ConvertToByteKey(domain, true), $"Default should fail: {expectedReason}");
-
-        // Lmdb-backed Tree
-        var exLmdb = Assert.ThrowsExactly<InvalidDomainNameException>(() =>
-            _databaseBackedTree.ConvertToByteKey(domain, true), $"Lmdb-backed should fail: {expectedReason}");
-        // MMAP-backed Tree
-        var exMmap = Assert.ThrowsExactly<InvalidDomainNameException>(() =>
-            _mmapBackedTree.ConvertToByteKey(domain, true), $"Mmap-backed should fail: {expectedReason}");
-
-        // Ensure all caught the same logical error
-        Assert.IsNotNull(exBaseline);
-        Assert.IsNotNull(exLmdb);
-        Assert.IsNotNull(exMmap);
-    }
-
-    [TestMethod]
-    public void Parity_DeepHierarchy_Cleanup()
-    {
-        string deep = "very.deep.sub.domain.structure.com";
-        _defaultTree.Add(deep, "test");
-        _databaseBackedTree.Add(deep, "test");
-        _mmapBackedTree.Add(deep, "test");
-        _dnsTrie.Set(deep, "test");
-
-        _defaultTree.TryRemove(deep, out _);
-        _databaseBackedTree.TryRemove(deep, out _);
-        _mmapBackedTree.TryRemove(deep, out _);
-        _dnsTrie.Delete(deep);
-
-        // This ensures CleanThisBranch works identically in both
-        Assert.IsTrue(_defaultTree.IsEmpty, "Default tree failed to clean branch");
-        Assert.IsTrue(_databaseBackedTree.IsEmpty, "Lmdb-backed tree failed to clean branch");
-        Assert.IsTrue(_mmapBackedTree.IsEmpty, "Mmap-backed tree failed to clean branch");
-        Assert.AreEqual(0, _dnsTrie.Count, "DnsTrie failed to clean branch");
+        _defaultTree = new DomainTree<string>();
+        _databaseBackedTree = new DatabaseBackedDomainTree<string>("treetest", new MessagePackCodec<string>());
+        _mmapBackedTree = new MmapBackedDomainTree<string>("treetest_mmap", new MessagePackCodec<string>());
+        _dnsTrie = new DnsTrie<string>();
     }
 }
