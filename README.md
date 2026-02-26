@@ -49,7 +49,7 @@ Large realistic domain trees with deep hierarchies and frequent lookups.
 * MMAP achieves the **fastest lookup performance**.
 * MMAP does **not increase GC pressure** compared to the in-memory version.
 * Lookup performance is dominated by traversal, not deserialization.
-* C# version of the DNS-optimized QP trie by Tony Finch <dot@dotat.at> serems to be faster, with the optimizations to minimize allocations, etc. 
+* C# version of the DNS-optimized QP trie by Tony Finch <dot@dotat.at> seems to be faster, with the optimizations to minimize allocations, etc. 
 
 ---
 
@@ -137,7 +137,7 @@ P.S: The `DnsTrie` backend uses an internal encoding optimized for DNS labels, s
 
 ## Functional Parity
 
-All backends implement -except `ConcurrentDictionary` and `DnsTrie`:
+All backends (except `ConcurrentDictionary` and `DnsTrie`) implement:
 
 ```csharp
 IBackend<TKey, TValue>
@@ -178,7 +178,7 @@ Future work:
 
 ## Summary
 
-As expected, in-memory data is the winner. Our custom memory-mapped file-backed binary ByteTree has shown similar performance to LMDB. The serizalization and memory allocations were the bottlenecks for resource usage.
+As expected, in-memory data is the winner. Our custom memory-mapped file-backed binary ByteTree has shown similar performance to LMDB. The serialization and memory allocations were the bottlenecks for resource usage.
 
 The DNS-optimized QP trie shows promising performance, but further optimizations and comparisons are needed to fully understand its tradeoffs.
 
