@@ -1361,7 +1361,7 @@ namespace BenchmarkTreeBackends.Backends.QP
                     {
                         // GROW: add newBit to existing branch at diffOff.
                         // If newBit is already present, a concurrent insert raced us; restart.
-                        if (HasTwig(state, newBit)) break;
+                        if (HasTwig(state, newBit)) continue;
 
                         BranchState grown = new BranchState(
                             state.Bitmap | 1UL << newBit,
