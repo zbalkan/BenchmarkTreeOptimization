@@ -134,7 +134,6 @@ namespace BenchmarkTreeBackends.Backends.QP
         private const byte BLower = BBlock0;
 
         // Bitmap bit-position constants. Bits 0–1 reserved; excluded from PopCount via BitmapMask.
-        // See ARCHITECTURE.md §3 for the full 64-bit word layout.
         private const byte BNobyte = 2;   // label-separator / end-of-key sentinel
 
         // '-' — direct single-bit
@@ -158,7 +157,7 @@ namespace BenchmarkTreeBackends.Backends.QP
         // letters a–z → bits 22–47 (26 bits)
         // split block: 0xE0–0xFF
         // Bytes whose source value maps to one of these bits require a second key byte
-        // encoding the low 5 bits (3+5 split scheme). See ARCHITECTURE.md §3.1.
+        // encoding the low 5 bits (3+5 split scheme).
         private const ulong SplitMask =
             1UL << BBlock0 | 1UL << BBlockA1 | 1UL << BBlockC1 |
             1UL << BBlock2 | 1UL << BBlock3 | 1UL << BBlock4 |
@@ -856,7 +855,6 @@ namespace BenchmarkTreeBackends.Backends.QP
         // SIMD fast path: encodes 16 elements per iteration using arithmetic instead
         // of table lookup. Only valid for the clean DNS alphabet — chars outside
         // [0x2D,0x39] or [0x5F,0x7A] cause an immediate break to the scalar tail.
-        // See ARCHITECTURE.md §4.5 for the arithmetic derivation.
         /// <summary>
         /// Encodes as many chars as possible from <paramref name="chars"/> using
         /// the SIMD arithmetic fast path, writing the results to
