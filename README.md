@@ -21,7 +21,7 @@ The same logical API (`IBackend<TKey, TValue>`) is implemented using three diffe
 BenchmarkDotNet v0.15.8, Windows 11 (10.0.26200.7840/25H2/2025Update/HudsonValley2)
 AMD Ryzen AI 5 PRO 340 w/ Radeon 840M 2.00GHz, 1 CPU, 12 logical and 6 physical cores
 .NET SDK 9.0.311
-  [Host]     : .NET 9.0.13 (9.0.13, 9.0.1326.6317), X64 RyuJIT x86-64-v4 [AttachedDebugger]
+  [Host]     : .NET 9.0.13 (9.0.13, 9.0.1326.6317), X64 RyuJIT x86-64-v4
   DefaultJob : .NET 9.0.13 (9.0.13, 9.0.1326.6317), X64 RyuJIT x86-64-v4
 ```
 
@@ -32,22 +32,20 @@ Large realistic domain trees with deep hierarchies and frequent lookups.
 
 ## Benchmark Results
 
-| Method                | Mean        | Error     | StdDev    | Ratio | RatioSD | Gen0        | Allocated   | Alloc Ratio |
-|---------------------- |------------:|----------:|----------:|------:|--------:|------------:|------------:|------------:|
-| ConcurrentDictionary  |    97.97 ms |  1.946 ms |  4.736 ms |  1.00 |    0.07 |           - |           - |          NA |
-| InMemoryDomainTree    |   868.52 ms |  4.411 ms |  3.910 ms |  8.88 |    0.41 |  53000.0000 | 446153824 B |          NA |
-| LmdbBackedDomainTree  | 1,393.77 ms | 21.452 ms | 17.914 ms | 14.26 |    0.68 | 111000.0000 | 935384968 B |          NA |
-| LmdbBackedDomainTree2 | 1,164.14 ms | 17.799 ms | 15.778 ms | 11.91 |    0.57 |  93000.0000 | 781538696 B |          NA |
-| MmapBackedDomainTree  | 1,265.08 ms | 24.009 ms | 21.283 ms | 12.94 |    0.63 |  93000.0000 | 781538696 B |          NA |
-| MmapBackedDomainTree2 |   813.77 ms | 14.079 ms | 17.291 ms |  8.32 |    0.42 |  75000.0000 | 627692424 B |          NA |
-| DnsTrie               |   361.87 ms |  8.666 ms | 24.157 ms |  3.70 |    0.30 |           - |           - |          NA |
-| DnsTrieWireFormat     |   545.00 ms |  6.730 ms |  5.620 ms |  5.57 |    0.26 |           - |           - |          NA |
-
+| Method                | Mean       | Error    | StdDev    | Median     | Ratio | RatioSD | Gen0        | Allocated   | Alloc Ratio |
+|---------------------- |-----------:|---------:|----------:|-----------:|------:|--------:|------------:|------------:|------------:|
+| ConcurrentDictionary  |   157.6 ms | 11.69 ms |  34.48 ms |   160.0 ms |  1.06 |    0.36 |           - |           - |          NA |
+| InMemoryDomainTree    |   645.8 ms | 14.46 ms |  42.64 ms |   627.5 ms |  4.33 |    1.14 |  53000.0000 | 446153824 B |          NA |
+| LmdbBackedDomainTree  | 1,065.5 ms | 13.49 ms |  11.96 ms | 1,066.2 ms |  7.14 |    1.81 | 111000.0000 | 935384968 B |          NA |
+| LmdbBackedDomainTree2 | 1,603.2 ms | 75.31 ms | 212.41 ms | 1,658.1 ms | 10.75 |    3.09 |  93000.0000 | 781538696 B |          NA |
+| MmapBackedDomainTree  | 1,335.6 ms | 53.60 ms | 151.18 ms | 1,277.5 ms |  8.96 |    2.50 |  93000.0000 | 781538696 B |          NA |
+| MmapBackedDomainTree2 | 1,163.0 ms | 47.30 ms | 139.47 ms | 1,119.2 ms |  7.80 |    2.20 |  75000.0000 | 627692424 B |          NA |
+| DnsTrie               |   348.8 ms |  3.70 ms |   3.80 ms |   348.5 ms |  2.34 |    0.59 |           - |           - |          NA |
+| DnsTrieWireFormat     |   774.8 ms | 33.14 ms |  94.01 ms |   724.1 ms |  5.20 |    1.47 |           - |           - |          NA |
 
 ### Key observations
 
 * Disk-backed serialization is **significantly slower** and allocates more.
-* MMAP achieves the **fastest lookup performance**.
 * MMAP does **not increase GC pressure** compared to the in-memory version.
 * Lookup performance is dominated by traversal, not deserialization.
 * C# version of the DNS-optimized QP trie by Tony Finch <dot@dotat.at> seems to be faster, with the optimizations to minimize allocations, etc. 
