@@ -1,4 +1,4 @@
-﻿// DnsTrie.cs — Lock-Free DNS QP-Trie for .NET 9 / C# 13
+// DnsTrie.cs — Lock-Free DNS QP-Trie for .NET 9 / C# 13
 // Original algorithm: Tony Finch <dot@dotat.at> (CC0 Public Domain)
 
 using System;
