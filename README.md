@@ -91,30 +91,6 @@ This backend is optimized for **read-heavy workloads** such as DNS resolution.
 
 ---
 
-## Blue/Green Publishing Model (MMAP)
-
-MMAP never mutates the active file.
-
-All changes happen in an in-memory **staging trie**:
-
-1. Reads always use the **active immutable snapshot**
-2. Writes go to the **staging tree**
-3. `Swap()`:
-
-   * Builds a new MMAP file
-   * Atomically replaces the old file
-   * Readers switch to the new snapshot
-4. Old snapshot is disposed after readers finish
-
-This guarantees:
-
-* No partial updates
-* No torn reads
-* No corruption
-* Safe concurrent readers
-
----
-
 ## Value Serialization
 
 All values are encoded using either native UTF8 string converter or MessagePack implementing the interface:
@@ -180,6 +156,8 @@ Future work:
 As expected, in-memory data is the winner. Our custom memory-mapped file-backed binary ByteTree has shown similar performance to LMDB. The serialization and memory allocations were the bottlenecks for resource usage.
 
 The DNS-optimized QP trie shows promising performance, but further optimizations and comparisons are needed to fully understand its tradeoffs.
+
+The `DnsTrie`, as the C# reimplementation of the QP-trie, uses managed allocations to improve latency and throughput. Reducing GC allocation rate improves latency stability (fewer and shorter pauses) and CPU efficiency (less time in the allocator). It does not reduce the working set — the total RAM consumed by the live trie. The current C# implementation uses roughly 10–15× more memory per stored entry than BIND's chunk-based layout. That gap is structural: it follows from the CLR object model, the three-object-per-branch CAS design, and the dual key storage per leaf. Closing it requires architectural changes to the concurrency model or the API contract, not changes to the hot-path allocation strategy.
 
 ---
 
