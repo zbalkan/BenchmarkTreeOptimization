@@ -154,6 +154,11 @@ namespace BenchmarkTreeBackends.Backends.QP
         // RFC 1035 §2.3.4: max 127 non-root labels.
         private const int MaxLabelCount = 127;
 
+        // RFC 1035 §2.3.4 / §3.1: max text-form name is 253 printable bytes.
+        // Worst-case source-char count: all bytes encoded as \DDD (4 chars each) → 253 × 4 = 1012.
+        // Any input exceeding this cannot represent a valid DNS name.
+        private const int MaxDnsNameChars = 1012;
+
         // letters a–z → bits 22–47 (26 bits)
         // split block: 0xE0–0xFF
         // Bytes whose source value maps to one of these bits require a second key byte
@@ -343,6 +348,7 @@ namespace BenchmarkTreeBackends.Backends.QP
         [SkipLocalsInit]
         public bool Delete(string name, out string foundKey, out TValue foundValue)
         {
+            ArgumentNullException.ThrowIfNull(name);
             Span<byte> key = stackalloc byte[KeyCapacity];
             int len = Encode(name, key);
             return DeleteCore(key[..len], key, len, out foundKey, out foundValue);
@@ -428,6 +434,7 @@ namespace BenchmarkTreeBackends.Backends.QP
         [SkipLocalsInit]
         public bool Set(string name, TValue value)
         {
+            ArgumentNullException.ThrowIfNull(name);
             Span<byte> newKey = stackalloc byte[KeyCapacity];
             int newLen = Encode(name.AsSpan(), newKey);
             return SetCoreImpl(newKey, newLen, storedKey: name, value);
@@ -456,6 +463,7 @@ namespace BenchmarkTreeBackends.Backends.QP
         [SkipLocalsInit]
         public bool TryGet(string name, out TValue value)
         {
+            ArgumentNullException.ThrowIfNull(name);
             TrieNode? n = _root;
             if (n is null) { value = default!; return false; }
 
@@ -834,17 +842,17 @@ namespace BenchmarkTreeBackends.Backends.QP
         //
         //  NormaliseName:  strips ALL trailing dots; "example.com..." → "example.com".
         //                  A lone "." (root zone) is preserved.
-        //                   original stripped only one dot, causing mismatched
+        //                  The original stripped only one dot, causing mismatched
         //                  keys for double-qualified names like "example.com..".
         //
         //  EncodeText / EncodeWire — each has two internal paths:
         //    Fast (no backslash detected): direct table lookup, no escape branching.
-        //      EncodeWire fast path also uses SIMD IndexOf('.') for label boundaries.
-        //    Slow (backslash present): full DecodeChar / SkipChar per character.
+        //      EncodeWire fast path uses SIMD IndexOf('.') in Pass 1 only.
+        //    Slow (backslash present): Pass 1 uses SkipChar for boundary discovery;
+        //                             Pass 2 uses DecodeChar for encoding.
         //
         //  EncodeWireRaw — genuine RFC 1035 length-prefixed wire bytes.
         //    No escapes possible; always takes the direct path; no SearchValues guard.
-        //  strip ALL trailing dots, not just one.
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static ReadOnlySpan<char> NormaliseName(ReadOnlySpan<char> name)
         {
@@ -1111,6 +1119,8 @@ namespace BenchmarkTreeBackends.Backends.QP
         private int Encode(ReadOnlySpan<char> name, scoped Span<byte> key)
         {
             ReadOnlySpan<char> n = NormaliseName(name);
+            if (n.Length > MaxDnsNameChars)
+                ThrowArgumentException("Domain name exceeds RFC 1035 maximum length of 253 bytes.");
             return _wire ? EncodeWire(n, key) : EncodeText(n, key);
         }
 
@@ -1121,7 +1131,7 @@ namespace BenchmarkTreeBackends.Backends.QP
         [SkipLocalsInit]
         private int EncodeText(ReadOnlySpan<char> name, scoped Span<byte> key)
         {
-            if (name.Length > 0 && name[0] == '.')
+            if (name.Length > 1 && name[0] == '.')
                 ThrowArgumentException("Domain name must not begin with a dot.");
 
             byte[] table = _table;
@@ -1172,7 +1182,7 @@ namespace BenchmarkTreeBackends.Backends.QP
         [SkipLocalsInit]
         private int EncodeWire(ReadOnlySpan<char> name, scoped Span<byte> key)
         {
-            if (name.Length > 0 && name[0] == '.')
+            if (name.Length > 1 && name[0] == '.')
                 ThrowArgumentException("Domain name must not begin with a dot.");
 
             Span<int> lpos = stackalloc int[MaxLabelCount];
@@ -1359,6 +1369,7 @@ namespace BenchmarkTreeBackends.Backends.QP
                 BranchState? parentState = null;
                 byte parentBit = 0;
                 n = root;
+                bool retryOuter = false;
 
                 while (n is BranchNode branch)
                 {
@@ -1367,8 +1378,14 @@ namespace BenchmarkTreeBackends.Backends.QP
                     if (branch.KeyOffset == diffOff)
                     {
                         // GROW: add newBit to existing branch at diffOff.
-                        // If newBit is already present, a concurrent insert raced us; restart.
-                        if (HasTwig(state, newBit)) continue;
+                        // Both exit paths here require an outer-loop restart, not NEW BRANCH:
+                        //   (a) HasTwig true  — a concurrent insert already added newBit; retry.
+                        //   (b) CasState fail — the bitmap changed between snapshot and CAS
+                        //       (e.g. another thread grew this branch); retry.
+                        // Falling through to NEW BRANCH in either case would wrap the
+                        // existing branch as a child of a new branch at the same offset,
+                        // making the winner's leaf permanently unreachable.
+                        if (HasTwig(state, newBit)) { retryOuter = true; break; }
 
                         BranchState grown = new BranchState(
                             state.Bitmap | 1UL << newBit,
@@ -1376,7 +1393,7 @@ namespace BenchmarkTreeBackends.Backends.QP
 
                         if (CasState(branch, grown, expected: state))
                         { Interlocked.Increment(ref _count); return true; }
-                        break;
+                        retryOuter = true; break;
                     }
 
                     if (branch.KeyOffset > diffOff) break; // NEW BRANCH needed above here
@@ -1389,6 +1406,7 @@ namespace BenchmarkTreeBackends.Backends.QP
                     parentBit = bit;
                     n = state.Twigs[TwigOffset(state, bit)];
                 }
+                if (retryOuter) continue; // restart outer while(true); skip NEW BRANCH
 
                 // NEW BRANCH: 2-child node at diffOff:
                 {
