@@ -79,6 +79,23 @@ namespace BenchmarkTreeBackends
             {
                 Directory.Delete("treetest", true);
             }
+
+            _dbBackedTree2.Dispose();
+            if (Directory.Exists("treetest2"))
+            {
+                Directory.Delete("treetest2", true);
+            }
+
+            _mmapBackedTree.Dispose();
+            if (File.Exists("treetest_mmap"))
+            {
+                File.Delete("treetest_mmap");
+            }
+            _mmapBackedTree2.Dispose();
+            if (File.Exists("treetest_mmap2"))
+            {
+                File.Delete("treetest_mmap2");
+            }
         }
 
         private static void Seed(IBackend<string, string> tree)
